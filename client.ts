@@ -9,6 +9,42 @@ interface Ruby {
 }
 type Furigana = string|Ruby;
 
+enum FactType {
+  Vocab = 'vocab',
+  Conjugated = 'conjugated',
+  Particle = 'particle',
+  Sentence = 'sentence',
+}
+
+interface BaseFact {
+  factType: FactType;
+}
+interface VocabFact extends BaseFact {
+  kanjiKana: string[];
+  definition: string;
+  factType: FactType.Vocab;
+}
+
+interface ConjugatedFact extends BaseFact {
+  expected: Furigana[];
+  hints: Furigana[];
+  factType: FactType.Conjugated;
+}
+
+interface ParticleFact extends BaseFact {
+  left: string;
+  cloze: string;
+  right: string;
+  factType: FactType.Particle;
+}
+
+interface SentenceFact extends BaseFact {
+  furigana: Furigana[];
+  subfacts: (VocabFact|ParticleFact|ConjugatedFact)[];
+  translation: {[lang: string]: string};
+  factType: FactType.Sentence;
+}
+
 function rubyNodeToFurigana(node: ChildNode): Furigana {
   if (node.nodeName === 'RUBY') {
     let rt = '';
@@ -40,21 +76,6 @@ function nodesToFurigana(nodes: ChildNode[]|NodeListOf<ChildNode>): Furigana[] {
   return ret;
 }
 
-enum FactType {
-  Vocab = 'vocab',
-  Conjugated = 'conjugated',
-  Particle = 'particle',
-  Sentence = 'sentence',
-}
-
-interface BaseFact {
-  factType: FactType;
-}
-interface VocabFact extends BaseFact {
-  kanjiKana: string[];
-  definition: string;
-  factType: FactType.Vocab;
-}
 // 遣る・行る「やる」：① to do/to undertake/to perform/to play (a game)/to study
 function textToVocab(s: string): VocabFact {
   const split = s.split('：');
@@ -64,11 +85,6 @@ function textToVocab(s: string): VocabFact {
   return {kanjiKana, definition, factType: FactType.Vocab};
 }
 
-interface ConjugatedFact extends BaseFact {
-  expected: Furigana[];
-  hints: Furigana[];
-  factType: FactType.Conjugated;
-}
 function textToConjugated(elt: Element): ConjugatedFact {
   const expected: Furigana[] = [];
   const hints: Furigana[] = [];
@@ -98,12 +114,6 @@ function textToConjugated(elt: Element): ConjugatedFact {
   return {expected, hints, factType: FactType.Conjugated};
 }
 
-interface ParticleFact extends BaseFact {
-  left: string;
-  cloze: string;
-  right: string;
-  factType: FactType.Particle;
-}
 function textToParticle(s: string): ParticleFact {
   const split = s.split('/');
   if (split.length === 1) {
@@ -125,12 +135,6 @@ function elementToFact(elt: Element) {
   throw new Error('unknown quizzable ' + elt);
 }
 
-interface SentenceFact extends BaseFact {
-  furigana: Furigana[];
-  subfacts: (VocabFact|ParticleFact|ConjugatedFact)[];
-  translation: {[lang: string]: string};
-  factType: FactType.Sentence;
-}
 function FuriganaComponent(props: {furiganas: Furigana[]}) {
   return ce(Fragment, null,
             ...props.furiganas.map(o => typeof o === 'string' ? o : ce('ruby', null, o.ruby, ce('rt', null, o.rt))))
