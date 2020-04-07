@@ -1,3 +1,4 @@
+import PouchDB from 'pouchdb';
 import {createElement, Fragment, useState} from 'react';
 import ReactDOM from 'react-dom';
 
@@ -149,19 +150,20 @@ function ParticleComponent(props: {fact: ParticleFact}) {
 function ConjugatedComponent(props: {fact: ConjugatedFact}) {
   return ce(Fragment, null, props.fact.expected, '：', ce(FuriganaComponent, {furiganas: props.fact.hints}))
 }
-function Sentence(props: SentenceFact) {
+function Sentence(props: {fact: SentenceFact}) {
   return ce(
       Fragment,
       null,
-      ce('summary', null, ce(FuriganaComponent, {furiganas: props.furigana})),
+      ce('summary', null, ce(FuriganaComponent, {furiganas: props.fact.furigana})),
       ce(
           'ul',
           null,
-          ...props.subfacts.map(fact => ce('li', null,
-                                           fact.factType === FactType.Vocab ? ce(VocabComponent, {fact})
-                                                                            : fact.factType === FactType.Particle
-                                                                                  ? ce(ParticleComponent, {fact})
-                                                                                  : ce(ConjugatedComponent, {fact}))),
+          ...props.fact.subfacts.map(fact =>
+                                         ce('li', null,
+                                            fact.factType === FactType.Vocab ? ce(VocabComponent, {fact})
+                                                                             : fact.factType === FactType.Particle
+                                                                                   ? ce(ParticleComponent, {fact})
+                                                                                   : ce(ConjugatedComponent, {fact}))),
           ),
   );
 }
@@ -187,6 +189,6 @@ export function setup() {
 
     const fact: SentenceFact = {furigana, subfacts, translation, factType: FactType.Sentence};
     console.log(fact);
-    ReactDOM.render(ce(Sentence, fact), detail);
+    ReactDOM.render(ce(Sentence, {fact}), detail);
   }
 }
