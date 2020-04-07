@@ -139,9 +139,31 @@ function FuriganaComponent(props: {furiganas: Furigana[]}) {
   return ce(Fragment, null,
             ...props.furiganas.map(o => typeof o === 'string' ? o : ce('ruby', null, o.ruby, ce('rt', null, o.rt))))
 }
+function VocabComponent(props: {fact: VocabFact}) {
+  return ce(Fragment, null, props.fact.kanjiKana.join('・'), '：', props.fact.definition);
+}
+function ParticleComponent(props: {fact: ParticleFact}) {
+  const {left, right, cloze} = props.fact;
+  return ce(Fragment, null, `${left ? '…' + left : ''}${cloze}${right ? right + '…' : ''}`)
+}
+function ConjugatedComponent(props: {fact: ConjugatedFact}) {
+  return ce(Fragment, null, props.fact.expected, '：', ce(FuriganaComponent, {furiganas: props.fact.hints}))
+}
 function Sentence(props: SentenceFact) {
-  return ce(Fragment, null, ce('summary', null, ce(FuriganaComponent, {furiganas: props.furigana})),
-            'coming soon: ' + props.subfacts.length + ' sub-facts!');
+  return ce(
+      Fragment,
+      null,
+      ce('summary', null, ce(FuriganaComponent, {furiganas: props.furigana})),
+      ce(
+          'ul',
+          null,
+          ...props.subfacts.map(fact => ce('li', null,
+                                           fact.factType === FactType.Vocab ? ce(VocabComponent, {fact})
+                                                                            : fact.factType === FactType.Particle
+                                                                                  ? ce(ParticleComponent, {fact})
+                                                                                  : ce(ConjugatedComponent, {fact}))),
+          ),
+  );
 }
 
 export function setup() {
