@@ -7,13 +7,15 @@
     "build": "tsc -p .",
     "dist": "browserify client.js -o client.bundle.js -s client",
     "watch": "fswatch -0 -o -l .1 client.js | xargs -0 -n 1 -I {} npm run dist",
-    "serve": "servor --reload && open http://localhost:8080",
+    "serve": "servor && open http://localhost:8080",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
   "author": "",
   "license": "Unlicense",
   "devDependencies": {
+    "@types/pouchdb": "^6.4.0",
+    "@types/pouchdb-upsert": "^2.2.6",
     "@types/react": "^16.9.19",
     "@types/react-dom": "^16.9.5",
     "browserify": "^16.5.0",
@@ -21,6 +23,9 @@
     "typescript": "^3.7.5"
   },
   "dependencies": {
+    "curtiz-utils": "git+https://github.com/fasiha/curtiz-utils.git",
+    "pouchdb": "^7.2.1",
+    "pouchdb-upsert": "^2.2.0",
     "react": "^16.12.0",
     "react-dom": "^16.12.0"
   }

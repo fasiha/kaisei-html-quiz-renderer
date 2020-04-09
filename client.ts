@@ -1,7 +1,9 @@
+import {hasKanji} from 'curtiz-utils';
 import PouchDB from 'pouchdb';
-import {createElement, Fragment, useState} from 'react';
+import {createElement, Fragment, useEffect, useState} from 'react';
 import ReactDOM from 'react-dom';
 
+PouchDB.plugin(require('pouchdb-upsert'));
 const ce = createElement;
 
 interface Ruby {
@@ -45,6 +47,8 @@ interface SentenceFact extends BaseFact {
   translation: {[lang: string]: string};
   factType: FactType.Sentence;
 }
+
+function furiganaToString(v: Furigana[]): string { return v.map(o => typeof o === 'string' ? o : o.ruby).join(''); }
 
 function rubyNodeToFurigana(node: ChildNode): Furigana {
   if (node.nodeName === 'RUBY') {
@@ -150,11 +154,53 @@ function ParticleComponent(props: {fact: ParticleFact}) {
 function ConjugatedComponent(props: {fact: ConjugatedFact}) {
   return ce(Fragment, null, props.fact.expected, '：', ce(FuriganaComponent, {furiganas: props.fact.hints}))
 }
+
 function Sentence(props: {fact: SentenceFact}) {
+  type BoolDict = {[k: string]: boolean};
+  const [learned, setLearned] = useState(undefined as undefined | BoolDict);
+
+  // the following block is a candidate for `useMemo`.
+  const text = furiganaToString(props.fact.furigana);
+  if (text.includes('/')) { throw new Error('unhandled: text containing separator'); }
+  const dbKeys = [`model/${text}/meaning`];
+  if (hasKanji(text)) { dbKeys.push(`model/${text}/reading`); }
+
+  useEffect(() => {
+    if (!learned) {
+      async function init(dbKeys: string[]) {
+        const learned: BoolDict = {};
+        for (const key of dbKeys) {
+          try {
+            await db.get(key);
+            learned[key] = true;
+          } catch { learned[key] = false; }
+        }
+        setLearned(learned);
+      }
+      init(dbKeys);
+    }
+
+    const changes = db.changes({since: 'now', live: true, doc_ids: dbKeys}).on('change', change => {
+      if (!learned) { return; }  // if setLearned hasn't yet updated the state, just bail
+      setLearned({...learned, [change.id]: !change.deleted});
+    });
+    return () => changes.cancel();  // to cancel the listener when component unmounts.
+    // `return changes.cancel.bind(changes);` should work too but triggers "MaxListenersExceededWarning"?
+    // Can't just `return changes.cancel` either because `this` error.
+  });
+
+  const buttons = learned ? dbKeys.map(key => {
+    const thisLearned = learned[key] ? 'unlearn' : 'learn!';
+    const display = key.endsWith('meaning') ? 'Meaning' : 'Reading';
+    return ce('button', {onClick: e => learnUnlearn(key, !(learned[key]))}, `${display} ${thisLearned}`);
+  })
+                          : [];
+
   return ce(
       Fragment,
       null,
       ce('summary', null, ce(FuriganaComponent, {furiganas: props.fact.furigana})),
+      ...buttons,
       ce(
           'ul',
           null,
@@ -168,12 +214,17 @@ function Sentence(props: {fact: SentenceFact}) {
   );
 }
 
+function learnUnlearn(key: string, learn: boolean) {
+  return db.upsert(key, old => learn ? {...old, learned: true} : {...old, _deleted: true});
+}
+
 export function setup() {
   const details = document.querySelectorAll('details.quizzable');
   for (const detail of details) {
     const sentence = detail.querySelector('.quizzable.sentence');
     if (!sentence) {
       continue;
+      // TODO: vocab-only
       const vocabNode = detail.querySelector('.quizzable.vocab');
       if (!vocabNode) { continue; }
       // const fact = elementToFact(vocabNode);
@@ -192,3 +243,6 @@ export function setup() {
     ReactDOM.render(ce(Sentence, {fact}), detail);
   }
 }
+
+type Db = PouchDB.Database<{}>;
+const db: Db = new PouchDB('kaisei');
