@@ -48,7 +48,9 @@ interface SentenceFact extends BaseFact {
   factType: FactType.Sentence;
 }
 
-function furiganaToString(v: Furigana[]): string { return v.map(o => typeof o === 'string' ? o : o.ruby).join(''); }
+function furiganaToString(v: Furigana[]): string {
+  return v.map(o => typeof o === 'string' ? o : o.ruby).join('').trim();
+}
 
 function rubyNodeToFurigana(node: ChildNode): Furigana {
   if (node.nodeName === 'RUBY') {
@@ -147,9 +149,44 @@ function FuriganaComponent(props: {furiganas: Furigana[]}) {
 function VocabComponent(props: {fact: VocabFact}) {
   return ce(Fragment, null, props.fact.kanjiKana.join('・'), '：', props.fact.definition);
 }
-function ParticleComponent(props: {fact: ParticleFact}) {
+function ParticleComponent(props: {fact: ParticleFact, parentSentenceId: string}) {
   const {left, right, cloze} = props.fact;
-  return ce(Fragment, null, `${left ? '…' + left : ''}${cloze}${right ? right + '…' : ''}`)
+
+  const particleKey = [left, cloze, right].join('_');
+  const dbKey = `model/${props.parentSentenceId}/particle/${particleKey}`;
+  const [learned, setLearned] = useState(undefined as undefined | boolean);
+
+  useEffect(() => {
+    if (typeof learned === 'undefined') {
+      async function init(dbKey: string) {
+        try {
+          await db.get(dbKey);
+          setLearned(true);
+        } catch { setLearned(false); }
+      }
+      init(dbKey);
+    }
+
+    const changes = db.changes({since: 'now', live: true, doc_ids: [dbKey]}).on('change', change => {
+      if (typeof learned === 'undefined') { return; }  // if setLearned hasn't yet updated the state, just bail
+      setLearned(!change.deleted);
+      // TODO this might not be necessary, i.e., if just a key changed
+    });
+    return () => changes.cancel();  // to cancel the listener when component unmounts.
+  })
+
+  if (typeof learned === 'undefined') {
+    return ce(Fragment, null, `${left ? '…' + left : ''}${cloze}${right ? right + '…' : ''}`)
+  }
+  const buttonText = learned ? 'Unlearn' : 'Learn!';
+  const button = ce('button', {
+    onClick: e => {
+      if (typeof learned === 'undefined') { return; };
+      learnUnlearn(dbKey, !learned);
+    },
+  },
+                    buttonText);
+  return ce(Fragment, null, `${left ? '…' + left : ''}${cloze}${right ? right + '…' : ''}`, button);
 }
 function ConjugatedComponent(props: {fact: ConjugatedFact}) {
   return ce(Fragment, null, props.fact.expected, '：', ce(FuriganaComponent, {furiganas: props.fact.hints}))
@@ -183,6 +220,7 @@ function Sentence(props: {fact: SentenceFact}) {
     const changes = db.changes({since: 'now', live: true, doc_ids: dbKeys}).on('change', change => {
       if (!learned) { return; }  // if setLearned hasn't yet updated the state, just bail
       setLearned({...learned, [change.id]: !change.deleted});
+      // TODO this might not be necessary, i.e., if just a key changed
     });
     return () => changes.cancel();  // to cancel the listener when component unmounts.
     // `return changes.cancel.bind(changes);` should work too but triggers "MaxListenersExceededWarning"?
@@ -204,12 +242,12 @@ function Sentence(props: {fact: SentenceFact}) {
       ce(
           'ul',
           null,
-          ...props.fact.subfacts.map(fact =>
-                                         ce('li', null,
-                                            fact.factType === FactType.Vocab ? ce(VocabComponent, {fact})
-                                                                             : fact.factType === FactType.Particle
-                                                                                   ? ce(ParticleComponent, {fact})
-                                                                                   : ce(ConjugatedComponent, {fact}))),
+          ...props.fact.subfacts.map(fact => ce('li', null,
+                                                fact.factType === FactType.Vocab
+                                                    ? ce(VocabComponent, {fact})
+                                                    : fact.factType === FactType.Particle
+                                                          ? ce(ParticleComponent, {fact, parentSentenceId: text})
+                                                          : ce(ConjugatedComponent, {fact}))),
           ),
   );
 }
