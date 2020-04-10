@@ -165,14 +165,15 @@ function ParticleComponent(props: {fact: ParticleFact, parentSentenceId: string}
         } catch { setLearned(false); }
       }
       init(dbKey);
+      return;
+    } else {
+      const changes = db.changes({since: 'now', live: true, doc_ids: [dbKey]}).on('change', change => {
+        if (typeof learned === 'undefined') { return; }  // if setLearned hasn't yet updated the state, just bail
+        setLearned(!change.deleted);
+        // TODO this might not be necessary, i.e., if just a key changed
+      });
+      return () => changes.cancel();  // to cancel the listener when component unmounts.
     }
-
-    const changes = db.changes({since: 'now', live: true, doc_ids: [dbKey]}).on('change', change => {
-      if (typeof learned === 'undefined') { return; }  // if setLearned hasn't yet updated the state, just bail
-      setLearned(!change.deleted);
-      // TODO this might not be necessary, i.e., if just a key changed
-    });
-    return () => changes.cancel();  // to cancel the listener when component unmounts.
   })
 
   if (typeof learned === 'undefined') {
@@ -188,8 +189,39 @@ function ParticleComponent(props: {fact: ParticleFact, parentSentenceId: string}
                     buttonText);
   return ce(Fragment, null, `${left ? '…' + left : ''}${cloze}${right ? right + '…' : ''}`, button);
 }
-function ConjugatedComponent(props: {fact: ConjugatedFact}) {
-  return ce(Fragment, null, props.fact.expected, '：', ce(FuriganaComponent, {furiganas: props.fact.hints}))
+function ConjugatedComponent(props: {fact: ConjugatedFact, parentSentenceId: string}) {
+  const subKey = furiganaToString(props.fact.expected);
+  const dbKey = `model/${props.parentSentenceId}/conjugated/${subKey}`;
+  const [learned, setLearned] = useState(undefined as undefined | boolean);
+  useEffect(() => {
+    // TODO: DRY: above with particles
+    if (typeof learned === 'undefined') {
+      async function init(dbKey: string) {
+        try {
+          await db.get(dbKey);
+          setLearned(true);
+        } catch { setLearned(false); }
+      }
+      init(dbKey);
+      return () => {};
+    }
+    const changes = db.changes({since: 'now', live: true, doc_ids: [dbKey]}).on('change', change => {
+      if (typeof learned === 'undefined') { return; }
+      setLearned(!change.deleted);
+    });
+    return () => changes.cancel();
+  });
+  if (typeof learned === 'undefined') {
+    return ce(Fragment, null, props.fact.expected, '：', ce(FuriganaComponent, {furiganas: props.fact.hints}));
+  }
+  const button = ce('button', {
+    onClick: e => {
+      if (typeof learned === 'undefined') { return; };
+      learnUnlearn(dbKey, !learned);
+    },
+  },
+                    learned ? 'Unlearn' : 'Learn!');
+  return ce(Fragment, null, props.fact.expected, '：', ce(FuriganaComponent, {furiganas: props.fact.hints}), button);
 }
 
 function Sentence(props: {fact: SentenceFact}) {
@@ -227,12 +259,12 @@ function Sentence(props: {fact: SentenceFact}) {
     // Can't just `return changes.cancel` either because `this` error.
   });
 
-  const buttons = learned ? dbKeys.map(key => {
+  if (typeof learned === 'undefined') { return ce(Fragment, null, ''); }
+  const buttons = dbKeys.map(key => {
     const thisLearned = learned[key] ? 'unlearn' : 'learn!';
     const display = key.endsWith('meaning') ? 'Meaning' : 'Reading';
     return ce('button', {onClick: e => learnUnlearn(key, !(learned[key]))}, `${display} ${thisLearned}`);
-  })
-                          : [];
+  });
 
   return ce(
       Fragment,
@@ -247,7 +279,7 @@ function Sentence(props: {fact: SentenceFact}) {
                                                     ? ce(VocabComponent, {fact})
                                                     : fact.factType === FactType.Particle
                                                           ? ce(ParticleComponent, {fact, parentSentenceId: text})
-                                                          : ce(ConjugatedComponent, {fact}))),
+                                                          : ce(ConjugatedComponent, {fact, parentSentenceId: text}))),
           ),
   );
 }
@@ -277,10 +309,10 @@ export function setup() {
     }
 
     const fact: SentenceFact = {furigana, subfacts, translation, factType: FactType.Sentence};
-    console.log(fact);
     ReactDOM.render(ce(Sentence, {fact}), detail);
   }
 }
 
 type Db = PouchDB.Database<{}>;
 const db: Db = new PouchDB('kaisei');
+db.setMaxListeners(50);
