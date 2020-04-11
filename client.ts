@@ -3,7 +3,7 @@ import * as ebisu from 'ebisu-js';
 import PouchDB from 'pouchdb';
 import {createElement, Fragment, useEffect, useState} from 'react';
 import ReactDOM from 'react-dom';
-import {Provider} from 'react-redux';
+import {connect, Provider} from 'react-redux';
 import {AnyAction, createStore, Store} from "redux";
 
 PouchDB.plugin(require('pouchdb-upsert'));
@@ -229,14 +229,13 @@ function ConjugatedComponent(props: {fact: Keyed<ConjugatedFact>}) {
 }
 
 function Sentence(props: {fact: Keyed<SentenceFact>}) {
-  type BoolDict = {[k: string]: boolean};
-  const [learned, setLearned] = useState(undefined as undefined | BoolDict);
+  const [learned, setLearned] = useState(undefined as undefined | Record<string, boolean>);
   const dbKeys = props.fact.keys;
 
   useEffect(() => {
     if (!learned) {
       async function init(dbKeys: string[]) {
-        const learned: BoolDict = {};
+        const learned: Record<string, boolean> = {};
         for (const key of dbKeys) {
           try {
             await db.get(key);
@@ -397,3 +396,41 @@ const store: Store<State, AnyAction> = '__REDUX_DEVTOOLS_EXTENSION__' in window
 type Db = PouchDB.Database<{}>;
 const db: Db = new PouchDB('kaisei');
 db.setMaxListeners(50);
+
+// Quiz app
+function Quiz(props: State) {
+  const dbKeys = Object.keys(props.facts);
+  const [learned, setLearned] = useState(undefined as undefined | Record<string, boolean>);
+
+  // DRY this is the same as in `Sentence` above
+  useEffect(() => {
+    if (!learned) {
+      async function init(dbKeys: string[]) {
+        const learned: Record<string, boolean> = {};
+        for (const key of dbKeys) {
+          try {
+            await db.get(key);
+            learned[key] = true;
+          } catch { learned[key] = false; }
+        }
+        setLearned(learned);
+      }
+      init(dbKeys);
+    }
+
+    const changes = db.changes({since: 'now', live: true, doc_ids: dbKeys}).on('change', change => {
+      if (!learned) { return; }  // if setLearned hasn't yet updated the state, just bail
+      setLearned({...learned, [change.id]: !change.deleted});
+      // TODO this might not be necessary, i.e., if just a key changed
+    });
+    return () => changes.cancel();  // to cancel the listener when component unmounts.
+    // `return changes.cancel.bind(changes);` should work too but triggers "MaxListenersExceededWarning"?
+    // Can't just `return changes.cancel` either because `this` error.
+  });
+
+  if (!learned) { return ce(Fragment, null, ''); }
+  return ce('ul', null, ...Object.keys(props.facts).map(k => ce('li', null, `${k}: ${learned[k] ? '✅' : '❌'}`)));
+}
+function mapStateToProps(state: State) { return {facts: state.facts}; }
+const QuizContainer = connect(mapStateToProps, {})(Quiz);
+ReactDOM.render(ce(Provider, {store}, ce(QuizContainer, null)), document.querySelector('#quiz-app'));
