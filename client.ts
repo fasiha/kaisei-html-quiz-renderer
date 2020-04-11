@@ -1,4 +1,5 @@
 import {hasKanji} from 'curtiz-utils';
+import * as ebisu from 'ebisu-js';
 import PouchDB from 'pouchdb';
 import {createElement, Fragment, useEffect, useState} from 'react';
 import ReactDOM from 'react-dom';
@@ -284,8 +285,21 @@ function Sentence(props: {fact: SentenceFact}) {
   );
 }
 
-function learnUnlearn(key: string, learn: boolean) {
-  return db.upsert(key, old => learn ? {...old, learned: true} : {...old, _deleted: true});
+type EbisuModel = ReturnType<typeof ebisu.defaultModel>;
+interface Model {
+  ebisu: EbisuModel;
+  lastSeen: string;
+}
+function learnUnlearn(key: string, learn: boolean, date?: Date) {
+  return db.upsert(key, old => {
+    if (!learn) { return {...old, _deleted: true}; }
+    const halflife = 0.5;  // hours
+    const ab = 3;          // unitless
+    // the initial prior on recall probability will be Beta(ab, ab) in `halflife` time units. Instead of tweaking the
+    // halflife when you first learn a fact, let's let users tweak it after a review.
+    const model: Model = {ebisu: ebisu.defaultModel(halflife, ab), lastSeen: (date || new Date()).toISOString()};
+    return {...old, ...model};
+  });
 }
 
 export function setup() {
