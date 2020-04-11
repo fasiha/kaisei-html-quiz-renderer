@@ -321,7 +321,9 @@ export function setup() {
 
     const fact: Keyed<SentenceFact> = addKeys({furigana, subfacts, translation, factType: FactType.Sentence});
 
-    ///// TODO : load all facts into Redux, so quiz component knows which quizzables are on the page!
+    const action: AddFactsAction = {type: ActionType.addFacts, facts: [fact, ...fact.subfacts]};
+    store.dispatch(action)
+
     ReactDOM.render(ce(Sentence, {fact}), detail);
   }
 }
@@ -362,29 +364,35 @@ function assertNever(x: never): never { throw new Error("Unexpected object: " + 
 
 // Redux step 1: actions
 enum ActionType {
-  addFact = 'addFact',
+  addFacts = 'addFacts',
 }
-interface AddFactAction {
-  type: ActionType.addFact;
-  fact: BaseFact;
-  id: string;
+interface AddFactsAction {
+  type: ActionType.addFacts;
+  facts: Keyed<Fact>[];
 }
-type Action = AddFactAction;
+type Action = AddFactsAction;
 // Redux step 2: state
 interface State {
-  facts: {[k: string]: BaseFact};
+  facts: {[k: string]: Fact};
 }
 const initialState: State = {
   facts: {}
 };
 // Redux step 3: reducer
 function reducer(state: State = initialState, action: Action) {
-  if (action.type === ActionType.addFact) { return {facts: {...state.facts, [action.id]: action.fact}}; }
-  console.error('unknown action', action);
+  if (action.type === ActionType.addFacts) {
+    const o: {[k: string]: Fact} = {};
+    for (const f of action.facts) {
+      for (const k of f.keys) { o[k] = f; }
+    }
+    return {facts: {...state.facts, ...o}};
+  }
   return state;
 }
 // Redux step 4: store
-const store: Store<State, AnyAction> = createStore(reducer);
+const store: Store<State, AnyAction> = '__REDUX_DEVTOOLS_EXTENSION__' in window
+                                           ? createStore(reducer, (window as any).__REDUX_DEVTOOLS_EXTENSION__())
+                                           : createStore(reducer);
 
 type Db = PouchDB.Database<{}>;
 const db: Db = new PouchDB('kaisei');
