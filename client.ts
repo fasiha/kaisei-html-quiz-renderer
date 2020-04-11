@@ -3,6 +3,8 @@ import * as ebisu from 'ebisu-js';
 import PouchDB from 'pouchdb';
 import {createElement, Fragment, useEffect, useState} from 'react';
 import ReactDOM from 'react-dom';
+import {Provider} from 'react-redux';
+import {AnyAction, createStore, Store} from "redux";
 
 PouchDB.plugin(require('pouchdb-upsert'));
 const ce = createElement;
@@ -48,6 +50,8 @@ interface SentenceFact extends BaseFact {
   translation: {[lang: string]: string};
   factType: FactType.Sentence;
 }
+
+type Fact = SentenceFact|ParticleFact|ConjugatedFact|VocabFact;
 
 function furiganaToString(v: Furigana[]): string {
   return v.map(o => typeof o === 'string' ? o : o.ruby).join('').trim();
@@ -147,14 +151,12 @@ function FuriganaComponent(props: {furiganas: Furigana[]}) {
   return ce(Fragment, null,
             ...props.furiganas.map(o => typeof o === 'string' ? o : ce('ruby', null, o.ruby, ce('rt', null, o.rt))))
 }
+
 function VocabComponent(props: {fact: VocabFact}) {
   return ce(Fragment, null, props.fact.kanjiKana.join('・'), '：', props.fact.definition);
 }
-function ParticleComponent(props: {fact: ParticleFact, parentSentenceId: string}) {
-  const {left, right, cloze} = props.fact;
-
-  const particleKey = [left, cloze, right].join('_');
-  const dbKey = `model/${props.parentSentenceId}/particle/${particleKey}`;
+function ParticleComponent(props: {fact: Keyed<ParticleFact>}) {
+  const dbKey = props.fact.keys[0];
   const [learned, setLearned] = useState(undefined as undefined | boolean);
 
   useEffect(() => {
@@ -177,6 +179,7 @@ function ParticleComponent(props: {fact: ParticleFact, parentSentenceId: string}
     }
   })
 
+  const {left, right, cloze} = props.fact;
   if (typeof learned === 'undefined') {
     return ce(Fragment, null, `${left ? '…' + left : ''}${cloze}${right ? right + '…' : ''}`)
   }
@@ -190,9 +193,9 @@ function ParticleComponent(props: {fact: ParticleFact, parentSentenceId: string}
                     buttonText);
   return ce(Fragment, null, `${left ? '…' + left : ''}${cloze}${right ? right + '…' : ''}`, button);
 }
-function ConjugatedComponent(props: {fact: ConjugatedFact, parentSentenceId: string}) {
-  const subKey = furiganaToString(props.fact.expected);
-  const dbKey = `model/${props.parentSentenceId}/conjugated/${subKey}`;
+
+function ConjugatedComponent(props: {fact: Keyed<ConjugatedFact>}) {
+  const dbKey = props.fact.keys[0];
   const [learned, setLearned] = useState(undefined as undefined | boolean);
   useEffect(() => {
     // TODO: DRY: above with particles
@@ -225,15 +228,10 @@ function ConjugatedComponent(props: {fact: ConjugatedFact, parentSentenceId: str
   return ce(Fragment, null, props.fact.expected, '：', ce(FuriganaComponent, {furiganas: props.fact.hints}), button);
 }
 
-function Sentence(props: {fact: SentenceFact}) {
+function Sentence(props: {fact: Keyed<SentenceFact>}) {
   type BoolDict = {[k: string]: boolean};
   const [learned, setLearned] = useState(undefined as undefined | BoolDict);
-
-  // the following block is a candidate for `useMemo`.
-  const text = furiganaToString(props.fact.furigana);
-  if (text.includes('/')) { throw new Error('unhandled: text containing separator'); }
-  const dbKeys = [`model/${text}/meaning`];
-  if (hasKanji(text)) { dbKeys.push(`model/${text}/reading`); }
+  const dbKeys = props.fact.keys;
 
   useEffect(() => {
     if (!learned) {
@@ -275,12 +273,12 @@ function Sentence(props: {fact: SentenceFact}) {
       ce(
           'ul',
           null,
-          ...props.fact.subfacts.map(fact => ce('li', null,
-                                                fact.factType === FactType.Vocab
-                                                    ? ce(VocabComponent, {fact})
-                                                    : fact.factType === FactType.Particle
-                                                          ? ce(ParticleComponent, {fact, parentSentenceId: text})
-                                                          : ce(ConjugatedComponent, {fact, parentSentenceId: text}))),
+          ...props.fact.subfacts.map(fact =>
+                                         ce('li', null,
+                                            fact.factType === FactType.Vocab ? ce(VocabComponent, {fact})
+                                                                             : fact.factType === FactType.Particle
+                                                                                   ? ce(ParticleComponent, {fact})
+                                                                                   : ce(ConjugatedComponent, {fact}))),
           ),
   );
 }
@@ -314,18 +312,79 @@ export function setup() {
       // const fact = elementToFact(vocabNode);
     }
     const furigana = nodesToFurigana(sentence.childNodes);
-    const factNodes = detail.querySelectorAll('.quizzable:not(.sentence)');
-    const subfacts = Array.from(factNodes, elt => elementToFact(elt));
+    const subfacts = Array.from(detail.querySelectorAll('.quizzable:not(.sentence)'), elementToFact);
     const translation: {[s: string]: string} = {};
     for (const elt of detail.querySelectorAll('.translation')) {
       const lang = Array.from(elt.classList).find(s => s !== 'translation') || 'pacification';
       translation[lang] = elt.textContent || 'pacification 2';
     }
 
-    const fact: SentenceFact = {furigana, subfacts, translation, factType: FactType.Sentence};
+    const fact: Keyed<SentenceFact> = addKeys({furigana, subfacts, translation, factType: FactType.Sentence});
+
+    ///// TODO : load all facts into Redux, so quiz component knows which quizzables are on the page!
     ReactDOM.render(ce(Sentence, {fact}), detail);
   }
 }
+
+/** Adds `keys` field to any fact */
+type Keyed1<T extends Fact> = T&{keys: string[]};
+/**
+Adds `keys` field to any fact AND to any subfield that happens to be an array of other facts
+
+A simplified way of doing the following would be:
+`type KeyedSentenceFact = Keyed1<SentenceFact>&{subfacts: Keyed1<SentenceFact['subfacts'][number]>[]};`
+*/
+type Keyed<T extends Fact> = {
+  [K in keyof T]: T[K] extends Array<Fact>? Keyed1<T[K][0]>[] : T[K]
+}&{keys: string[]};
+
+function addKeys(sentence: SentenceFact): Keyed<SentenceFact> {
+  const text = furiganaToString(sentence.furigana);
+  if (text.includes('/')) { throw new Error('unhandled: text containing separator'); }
+  const keys = [`model/${text}/meaning`];
+  if (hasKanji(text)) { keys.push(`model/${text}/reading`); }
+
+  const orig = sentence.subfacts;
+  const subfacts: Keyed1<(typeof orig)[number]>[] = orig.map(o => {
+    if (o.factType === FactType.Conjugated) {
+      return { ...o, keys: [`model/${text}/conjugated/${furiganaToString(o.expected)}`] }
+    } else if (o.factType === FactType.Particle) {
+      const particleKey = [o.left, o.cloze, o.right].join('_');
+      return { ...o, keys: [`model/${text}/particle/${particleKey}`] }
+    } else if (o.factType === FactType.Vocab) {
+      return { ...o, keys: [] }
+    }
+    assertNever(o);
+  });
+  return {...sentence, subfacts, keys};
+}
+function assertNever(x: never): never { throw new Error("Unexpected object: " + x); }
+
+// Redux step 1: actions
+enum ActionType {
+  addFact = 'addFact',
+}
+interface AddFactAction {
+  type: ActionType.addFact;
+  fact: BaseFact;
+  id: string;
+}
+type Action = AddFactAction;
+// Redux step 2: state
+interface State {
+  facts: {[k: string]: BaseFact};
+}
+const initialState: State = {
+  facts: {}
+};
+// Redux step 3: reducer
+function reducer(state: State = initialState, action: Action) {
+  if (action.type === ActionType.addFact) { return {facts: {...state.facts, [action.id]: action.fact}}; }
+  console.error('unknown action', action);
+  return state;
+}
+// Redux step 4: store
+const store: Store<State, AnyAction> = createStore(reducer);
 
 type Db = PouchDB.Database<{}>;
 const db: Db = new PouchDB('kaisei');
