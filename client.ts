@@ -449,18 +449,77 @@ function Quiz(props: PageState) {
   const fact = toQuizKey in props.facts ? props.facts[toQuizKey] : undefined;
   if (!fact) { return ce(Fragment, null, 'ERROR: best quiz from Pouchdb not in Redux?') }
 
-  if (fact.factType === FactType.Vocab) {
-    return ce('div', null, ce('h2', null, 'gonna quiz ' + toQuizKey), ce(VocabComponent, {fact}));
-  } else if (fact.factType === FactType.Conjugated) {
-    return ce('div', null, ce('h2', null, 'gonna quiz ' + toQuizKey), ce(ConjugatedComponent, {fact}));
-  } else if (fact.factType === FactType.Particle) {
-    return ce('div', null, ce('h2', null, 'gonna quiz ' + toQuizKey), ce(ParticleComponent, {fact}));
+  const ret = Object.keys(learned).map(key => {      // in Pouchdb (all quizzes ever learned or unlearned)
+    if (key in props.facts && learned[key].ebisu) {  // also in redux (all quizzes in this doc) & learned
+      const fact = props.facts[key];
+      if (fact.factType === FactType.Particle || fact.factType === FactType.Conjugated) {
+        const parentKey = key.split('/').slice(0, 2).join('/') + '/meaning';
+        const parent = props.facts[parentKey];
+        if (parent && parent.factType === FactType.Sentence) {
+          return ce('div', null, ce('h2', null, 'gonna quiz ' + key), ce(FactQuiz, {fact, quizKey: key, parent}));
+        }
+        return ce('div', null, 'Failed to find parent');
+      } else if (fact.factType === FactType.Vocab) {
+        return ce('div', null, ce('h2', null, 'gonna quiz ' + key), ce(FactQuiz, {fact, quizKey: key}));
+      } else if (fact.factType === FactType.Sentence) {
+        return ce('div', null, ce('h2', null, 'gonna quiz ' + key), ce(FactQuiz, {fact, quizKey: key}));
+      } else {
+        assertNever(fact);
+      }
+    }
+    return undefined;
+  });
+  return ce('div', null, ...ret.filter(x => !!x));
+
+  /*
+  if (fact.factType === FactType.Particle || fact.factType === FactType.Conjugated) {
+    const parentKey = toQuizKey.split('/').slice(0, 2).join('/') + '/meaning';
+    const parent = props.facts[parentKey];
+    if (parent && parent.factType === FactType.Sentence) {
+      return ce('div', null, ce('h2', null, 'gonna quiz ' + toQuizKey),
+                ce(FactQuiz, {fact, quizKey: toQuizKey, parent}));
+    }
+    return ce('div', null, 'Failed to find parent');
+  } else if (fact.factType === FactType.Vocab) {
+    return ce('div', null, ce('h2', null, 'gonna quiz ' + toQuizKey), ce(FactQuiz, {fact, quizKey: toQuizKey}));
   } else if (fact.factType === FactType.Sentence) {
-    return ce('div', null, ce('h2', null, 'gonna quiz ' + toQuizKey), ce(Sentence, {fact}));
+    return ce('div', null, ce('h2', null, 'gonna quiz ' + toQuizKey), ce(FactQuiz, {fact, quizKey: toQuizKey}));
+  } else {
+    assertNever(fact);
+  }
+  */
+}
+
+function FactQuiz(props: {fact: Keyed<Fact>, quizKey: string, parent?: Keyed<SentenceFact>}) {
+  const {fact, quizKey} = props;
+  if (fact.factType === FactType.Sentence) {
+    if (quizKey.endsWith('meaning')) {
+      return ce('p', null, 'Do you know what this sentence means? ', ce(FuriganaComponent, {furiganas: fact.furigana}));
+    } else if (quizKey.endsWith('reading')) {
+      return ce('p', null, 'Do you know the reading for this sentence? ', furiganaToString(fact.furigana));
+    } else {
+      throw new Error('unknown sentence quiz type');
+    }
+  } else if (fact.factType === FactType.Vocab) {
+    return ce('p', null, 'unimplemented');
+  } else if (fact.factType === FactType.Conjugated) {
+    const {parent} = props;
+    if (!parent) { throw new Error('parent not given'); }
+    const text = furiganaToString(parent.furigana);
+    const hidden = text.replace(furiganaToString(fact.expected), '■■■■■■');
+    return ce('p', null, 'Fill in the blank: ' + hidden + '. Hint: ', ce(FuriganaComponent, {furiganas: fact.hints}));
+  } else if (fact.factType === FactType.Particle) {
+    const {parent} = props;
+    if (!parent) { throw new Error('parent not given'); }
+    const text = furiganaToString(parent.furigana);
+    const {left, right, cloze} = fact;
+    const hidden = text.replace(`${left || ''}${cloze}${right || ''}`, '■■■');
+    return ce('p', null, 'Fill in the blank: ' + hidden);
   } else {
     assertNever(fact);
   }
 }
+
 function mapStateToProps(state: PageState) { return {facts: state.facts}; }
 const QuizContainer = connect(mapStateToProps, {})(Quiz);
 ReactDOM.render(ce(Provider, {store: pageStore}, ce(QuizContainer, null)), document.querySelector('#quiz-app'));
