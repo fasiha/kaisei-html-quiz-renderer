@@ -283,7 +283,7 @@ function Sentence(props: {fact: Keyed<SentenceFact>}) {
 }
 
 type EbisuModel = ReturnType<typeof ebisu.defaultModel>;
-interface Model {
+interface Memory {
   ebisu: EbisuModel;
   lastSeen: string;
 }
@@ -294,7 +294,7 @@ function learnUnlearn(key: string, learn: boolean, date?: Date) {
     const ab = 3;          // unitless
     // the initial prior on recall probability will be Beta(ab, ab) in `halflife` time units. Instead of tweaking the
     // halflife when you first learn a fact, let's let users tweak it after a review.
-    const model: Model = {ebisu: ebisu.defaultModel(halflife, ab), lastSeen: (date || new Date()).toISOString()};
+    const model: Memory = {ebisu: ebisu.defaultModel(halflife, ab), lastSeen: (date || new Date()).toISOString()};
     return {...old, ...model};
   });
 }
@@ -321,7 +321,7 @@ export function setup() {
     const fact: Keyed<SentenceFact> = addKeys({furigana, subfacts, translation, factType: FactType.Sentence});
 
     const action: AddFactsAction = {type: ActionType.addFacts, facts: [fact, ...fact.subfacts]};
-    store.dispatch(action)
+    pageStore.dispatch(action)
 
     ReactDOM.render(ce(Sentence, {fact}), detail);
   }
@@ -371,14 +371,14 @@ interface AddFactsAction {
 }
 type Action = AddFactsAction;
 // Redux step 2: state
-interface State {
+interface PageState {
   facts: {[k: string]: Keyed<Fact>};
 }
-const initialState: State = {
+const initialState: PageState = {
   facts: {}
 };
 // Redux step 3: reducer
-function reducer(state: State = initialState, action: Action) {
+function reducer(state: PageState = initialState, action: Action) {
   if (action.type === ActionType.addFacts) {
     const o: {[k: string]: Keyed<Fact>} = {};
     for (const f of action.facts) {
@@ -389,26 +389,27 @@ function reducer(state: State = initialState, action: Action) {
   return state;
 }
 // Redux step 4: store
-const store: Store<State, AnyAction> = '__REDUX_DEVTOOLS_EXTENSION__' in window
-                                           ? createStore(reducer, (window as any).__REDUX_DEVTOOLS_EXTENSION__())
-                                           : createStore(reducer);
+const pageStore: Store<PageState, AnyAction> =
+    '__REDUX_DEVTOOLS_EXTENSION__' in window ? createStore(reducer, (window as any).__REDUX_DEVTOOLS_EXTENSION__())
+                                             : createStore(reducer);
 
 type Db = PouchDB.Database<{}>;
 const db: Db = new PouchDB('kaisei');
 db.setMaxListeners(50);
 
-// Quiz app
-function Quiz(props: State) {
+// Quiz app: props are all facts on THIS page: this comes from Redux (which we populated in `setup`). Then, from Poucdb,
+// which persists even after browser closes, we load memory models.
+function Quiz(props: PageState) {
   const dbKeys = Object.keys(props.facts);
-  const [learned, setLearned] = useState(undefined as undefined | Record<string, Partial<Model>>);
+  const [learned, setLearned] = useState(undefined as undefined | Record<string, Partial<Memory>>);
 
   useEffect(() => {
     if (!learned || (Object.keys(learned).length !== dbKeys.length)) {
       async function init(dbKeys: string[]) {
-        const learned: Record<string, Partial<Model>> = {};
+        const learned: Record<string, Partial<Memory>> = {};
         for (const key of dbKeys) {
           try {
-            const model = await db.get(key) as Model;
+            const model = await db.get(key) as Memory;
             learned[key] = model;
           } catch { learned[key] = {}; }
         }
@@ -423,7 +424,7 @@ function Quiz(props: State) {
         setLearned({...learned, [change.id]: {}});
         return;
       }
-      setLearned({...learned, [change.id]: change.doc as unknown as Model});
+      setLearned({...learned, [change.id]: change.doc as unknown as Memory});
     });
     return () => changes.cancel();  // to cancel the listener when component unmounts.
   });
@@ -431,10 +432,10 @@ function Quiz(props: State) {
   if (!learned) { return ce(Fragment, null, ''); }
 
   const now = Date.now();
-  const status: {min?: [string, Model]} = {};
+  const status: {min?: [string, Memory]} = {};
   argmin(Object.entries(learned), ([k, m]) => {
     if (m.ebisu) {
-      const model = m as Model;
+      const model = m as Memory;
       const lastSeen = new Date(model.lastSeen).valueOf();
       const elapsedHours = (now - lastSeen) / 3600e3;
       const ret = ebisu.predictRecall(model.ebisu, elapsedHours);
@@ -460,6 +461,6 @@ function Quiz(props: State) {
     assertNever(fact);
   }
 }
-function mapStateToProps(state: State) { return {facts: state.facts}; }
+function mapStateToProps(state: PageState) { return {facts: state.facts}; }
 const QuizContainer = connect(mapStateToProps, {})(Quiz);
-ReactDOM.render(ce(Provider, {store}, ce(QuizContainer, null)), document.querySelector('#quiz-app'));
+ReactDOM.render(ce(Provider, {store: pageStore}, ce(QuizContainer, null)), document.querySelector('#quiz-app'));
