@@ -1,4 +1,4 @@
-import {hasKanji} from 'curtiz-utils';
+import {argmin, hasKanji} from 'curtiz-utils';
 import * as ebisu from 'ebisu-js';
 import PouchDB from 'pouchdb';
 import {createElement, Fragment, useEffect, useState} from 'react';
@@ -372,7 +372,7 @@ interface AddFactsAction {
 type Action = AddFactsAction;
 // Redux step 2: state
 interface State {
-  facts: {[k: string]: Fact};
+  facts: {[k: string]: Keyed<Fact>};
 }
 const initialState: State = {
   facts: {}
@@ -380,7 +380,7 @@ const initialState: State = {
 // Redux step 3: reducer
 function reducer(state: State = initialState, action: Action) {
   if (action.type === ActionType.addFacts) {
-    const o: {[k: string]: Fact} = {};
+    const o: {[k: string]: Keyed<Fact>} = {};
     for (const f of action.facts) {
       for (const k of f.keys) { o[k] = f; }
     }
@@ -400,36 +400,65 @@ db.setMaxListeners(50);
 // Quiz app
 function Quiz(props: State) {
   const dbKeys = Object.keys(props.facts);
-  const [learned, setLearned] = useState(undefined as undefined | Record<string, boolean>);
+  const [learned, setLearned] = useState(undefined as undefined | Record<string, Partial<Model>>);
 
-  // DRY this is the same as in `Sentence` above
   useEffect(() => {
-    if (!learned) {
+    if (!learned || (Object.keys(learned).length !== dbKeys.length)) {
       async function init(dbKeys: string[]) {
-        const learned: Record<string, boolean> = {};
+        const learned: Record<string, Partial<Model>> = {};
         for (const key of dbKeys) {
           try {
-            await db.get(key);
-            learned[key] = true;
-          } catch { learned[key] = false; }
+            const model = await db.get(key) as Model;
+            learned[key] = model;
+          } catch { learned[key] = {}; }
         }
         setLearned(learned);
       }
       init(dbKeys);
     }
 
-    const changes = db.changes({since: 'now', live: true, doc_ids: dbKeys}).on('change', change => {
+    const changes = db.changes({since: 'now', live: true, doc_ids: dbKeys, include_docs: true}).on('change', change => {
       if (!learned) { return; }  // if setLearned hasn't yet updated the state, just bail
-      setLearned({...learned, [change.id]: !change.deleted});
-      // TODO this might not be necessary, i.e., if just a key changed
+      if (change.deleted) {
+        setLearned({...learned, [change.id]: {}});
+        return;
+      }
+      setLearned({...learned, [change.id]: change.doc as unknown as Model});
     });
     return () => changes.cancel();  // to cancel the listener when component unmounts.
-    // `return changes.cancel.bind(changes);` should work too but triggers "MaxListenersExceededWarning"?
-    // Can't just `return changes.cancel` either because `this` error.
   });
 
   if (!learned) { return ce(Fragment, null, ''); }
-  return ce('ul', null, ...Object.keys(props.facts).map(k => ce('li', null, `${k}: ${learned[k] ? '✅' : '❌'}`)));
+
+  const now = Date.now();
+  const status: {min?: [string, Model]} = {};
+  argmin(Object.entries(learned), ([k, m]) => {
+    if (m.ebisu) {
+      const model = m as Model;
+      const lastSeen = new Date(model.lastSeen).valueOf();
+      const elapsedHours = (now - lastSeen) / 3600e3;
+      const ret = ebisu.predictRecall(model.ebisu, elapsedHours);
+      return ret;
+    }
+    return Infinity;
+  }, status);
+  const toQuizKeyVal = status.min;
+  if (!toQuizKeyVal) { return ce(Fragment, null, 'Nothing to quiz!'); }
+  const toQuizKey = toQuizKeyVal[0];
+  const fact = toQuizKey in props.facts ? props.facts[toQuizKey] : undefined;
+  if (!fact) { return ce(Fragment, null, 'ERROR: best quiz from Pouchdb not in Redux?') }
+
+  if (fact.factType === FactType.Vocab) {
+    return ce('div', null, ce('h2', null, 'gonna quiz ' + toQuizKey), ce(VocabComponent, {fact}));
+  } else if (fact.factType === FactType.Conjugated) {
+    return ce('div', null, ce('h2', null, 'gonna quiz ' + toQuizKey), ce(ConjugatedComponent, {fact}));
+  } else if (fact.factType === FactType.Particle) {
+    return ce('div', null, ce('h2', null, 'gonna quiz ' + toQuizKey), ce(ParticleComponent, {fact}));
+  } else if (fact.factType === FactType.Sentence) {
+    return ce('div', null, ce('h2', null, 'gonna quiz ' + toQuizKey), ce(Sentence, {fact}));
+  } else {
+    assertNever(fact);
+  }
 }
 function mapStateToProps(state: State) { return {facts: state.facts}; }
 const QuizContainer = connect(mapStateToProps, {})(Quiz);
