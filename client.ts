@@ -418,16 +418,35 @@ function Quiz(props: PageState) {
       init(dbKeys);
     }
 
+    // Lightweight one-off lossless-throttle for the changes event emitter: enforce a cooldown period, collecting
+    // changes, before applying them.
+    const COOLDOWN_MS = 200;
+    let timeout: ReturnType<typeof setTimeout>|undefined = undefined;
+    const ARRIVALS: PouchDB.Core.ChangesResponseChange<{}>[] = [];
     const changes = db.changes({since: 'now', live: true, doc_ids: dbKeys, include_docs: true}).on('change', change => {
       if (!learned) { return; }  // if setLearned hasn't yet updated the state, just bail
-      console.log('changes!', change);
-      if (change.deleted) {
-        setLearned({...learned, [change.id]: {}});
-        return;
+
+      // if this is the first change arriving (ever, or after the last cooldown period expired), set a timer: when it
+      // goes off, call `setLearned` on whatever's in `ARRIVALS`.
+      if (timeout === undefined) {
+        timeout = setTimeout(() => {
+          // At the end of the cooldown period, commit changes to `setLearned`.
+          console.log('cooled down!', ARRIVALS);
+          const o: typeof learned = {};
+          for (const change of ARRIVALS) { o[change.id] = change.deleted ? {} : change.doc as unknown as Memory; };
+          setLearned({...learned, ...o});
+        }, COOLDOWN_MS);
       }
-      setLearned({...learned, [change.id]: change.doc as unknown as Memory});
+      // as changes appear during the active cooldown, put them in `ARRIVALS`.
+      ARRIVALS.push(change);
     });
-    return () => changes.cancel();  // to cancel the listener when component unmounts.
+    // The risk is that this component might re-render during an active cooldown period. If that happens, then the
+    // `setLearned` lambda inside the timer callback will no longer be valid. Therefore, if the component is unmounting,
+    // cancel the PouchDB changefeed but *also* cancel the cooldown timer.
+    return () => {
+      changes.cancel();
+      if (timeout) { clearTimeout(timeout); }
+    };
   });
 
   if (!learned) { return ce(Fragment, null, ''); }
