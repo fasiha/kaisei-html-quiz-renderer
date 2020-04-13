@@ -1,4 +1,4 @@
-import {argmin, hasKanji} from 'curtiz-utils';
+import {argmin, hasKanji, kata2hira} from 'curtiz-utils';
 import * as ebisu from 'ebisu-js';
 import PouchDB from 'pouchdb';
 import {createElement, Fragment, useEffect, useState} from 'react';
@@ -53,9 +53,11 @@ interface SentenceFact extends BaseFact {
 
 type Fact = SentenceFact|ParticleFact|ConjugatedFact|VocabFact;
 
-function furiganaToString(v: Furigana[]): string {
+function furiganaToRuby(v: Furigana[]): string {
   return v.map(o => typeof o === 'string' ? o : o.ruby).join('').trim();
 }
+function furiganaToRt(v: Furigana[]): string { return v.map(o => typeof o === 'string' ? o : o.rt).join('').trim(); }
+function furiganaToHiragana(v: Furigana[]): string { return kata2hira(furiganaToRt(v)); }
 
 function rubyNodeToFurigana(node: ChildNode): Furigana {
   if (node.nodeName === 'RUBY') {
@@ -340,7 +342,7 @@ type Keyed<T extends Fact> = {
 }&{keys: string[]};
 
 function addKeys(sentence: SentenceFact): Keyed<SentenceFact> {
-  const text = furiganaToString(sentence.furigana);
+  const text = furiganaToRuby(sentence.furigana);
   if (text.includes('/')) { throw new Error('unhandled: text containing separator'); }
   const keys = [`model/${text}/meaning`];
   if (hasKanji(text)) { keys.push(`model/${text}/reading`); }
@@ -348,7 +350,7 @@ function addKeys(sentence: SentenceFact): Keyed<SentenceFact> {
   const orig = sentence.subfacts;
   const subfacts: Keyed1<(typeof orig)[number]>[] = orig.map(o => {
     if (o.factType === FactType.Conjugated) {
-      return { ...o, keys: [`model/${text}/conjugated/${furiganaToString(o.expected)}`] }
+      return { ...o, keys: [`model/${text}/conjugated/${furiganaToRuby(o.expected)}`] }
     } else if (o.factType === FactType.Particle) {
       const particleKey = [o.left, o.cloze, o.right].join('_');
       return { ...o, keys: [`model/${text}/particle/${particleKey}`] }
@@ -397,8 +399,8 @@ type Db = PouchDB.Database<{}>;
 const db: Db = new PouchDB('kaisei');
 db.setMaxListeners(50);
 
-// Quiz app: props are all facts on THIS page: this comes from Redux (which we populated in `setup`). Then, from Poucdb,
-// which persists even after browser closes, we load memory models.
+// Quiz app: props are all facts on THIS page: this comes from Redux (which we populated in `setup`). Then, from
+// Pouchdb, which persists even after browser closes, we load memory models.
 function Quiz(props: PageState) {
   const dbKeys = Object.keys(props.facts);
   const [learned, setLearned] = useState(undefined as undefined | Record<string, Partial<Memory>>);
@@ -431,7 +433,6 @@ function Quiz(props: PageState) {
       if (timeout === undefined) {
         timeout = setTimeout(() => {
           // At the end of the cooldown period, commit changes to `setLearned`.
-          console.log('cooled down!', ARRIVALS);
           const o: typeof learned = {};
           for (const change of ARRIVALS) { o[change.id] = change.deleted ? {} : change.doc as unknown as Memory; };
           setLearned({...learned, ...o});
@@ -557,7 +558,6 @@ async function reviewSentence(quizKey: string, result: boolean, response?: strin
     });
   }));
 
-  console.log('quiz events!', events);
   // Then, add new Pouchdb docs documenting this update
   const rand = Math.random().toString(36).slice(2);
   const logPromises = relatedKeys.map((modelKey, i) => {
@@ -570,7 +570,8 @@ async function reviewSentence(quizKey: string, result: boolean, response?: strin
 
 function FactQuiz(props: {fact: Keyed<Fact>, quizKey: string, parent?: Keyed<SentenceFact>}) {
   const {fact, quizKey} = props;
-  const [input, setInput] = useState('')
+  const [input, setInput] = useState('');
+
   if (fact.factType === FactType.Sentence) {
     if (quizKey.endsWith('meaning')) {
       const buttons = [
@@ -581,36 +582,42 @@ function FactQuiz(props: {fact: Keyed<Fact>, quizKey: string, parent?: Keyed<Sen
                 ...buttons);
     } else if (quizKey.endsWith('reading')) {
       const form = ce('input', {type: 'text', value: input, onChange: e => setInput(e.target.value)});
-      const submit = ce('button', null, 'Submit');
-      return ce('p', null, 'What is the reading for this sentence? ', furiganaToString(fact.furigana), form, submit);
+      const submit = ce('button', {
+        onClick: e => {
+          const expected = furiganaToHiragana(fact.furigana).replace(/\s/g, '');
+          const actual = kata2hira(input);
+          const result = expected === actual.replace(/\s/g, '');
+          reviewSentence(quizKey, result, actual);
+
+          console.log('result: ', {actual, expected});
+        }
+      },
+                        'Submit');
+      return ce('p', null, 'What is the reading for this sentence? ', furiganaToRuby(fact.furigana), form, submit);
     } else {
       throw new Error('unknown sentence quiz type');
     }
-  }
-  else if (fact.factType === FactType.Vocab) {
+  } else if (fact.factType === FactType.Vocab) {
     return ce('p', null, 'unimplemented');
-  }
-  else if (fact.factType === FactType.Conjugated) {
+  } else if (fact.factType === FactType.Conjugated) {
     const {parent} = props;
     if (!parent) { throw new Error('parent not given'); }
-    const text = furiganaToString(parent.furigana);
-    const hidden = text.replace(furiganaToString(fact.expected), '■■');
+    const text = furiganaToRuby(parent.furigana);
+    const hidden = text.replace(furiganaToRuby(fact.expected), '■■');
     const form = ce('input', {type: 'text', value: input, onChange: e => setInput(e.target.value)});
     const submit = ce('button', null, 'Submit');
     return ce('p', null, 'Fill in the blank (sorry no furigana yet): ' + hidden + '. Hint: ',
               ce(FuriganaComponent, {furiganas: fact.hints}), form, submit);
-  }
-  else if (fact.factType === FactType.Particle) {
+  } else if (fact.factType === FactType.Particle) {
     const {parent} = props;
     if (!parent) { throw new Error('parent not given'); }
-    const text = furiganaToString(parent.furigana);
+    const text = furiganaToRuby(parent.furigana);
     const {left, right, cloze} = fact;
     const hidden = text.replace(`${left || ''}${cloze}${right || ''}`, '■■');
     const form = ce('input', {type: 'text', value: input, onChange: e => setInput(e.target.value)});
     const submit = ce('button', null, 'Submit');
     return ce('p', null, 'Fill in the blank: ' + hidden, form, submit);
-  }
-  else {
+  } else {
     assertNever(fact);
   }
 }
