@@ -419,7 +419,7 @@ function Quiz(props: PageState) {
     }
 
     // Lightweight one-off lossless-throttle for the changes event emitter: enforce a cooldown period, collecting
-    // changes, before applying them.
+    // changes, before applying them. TODO: move this into Redux.
     const COOLDOWN_MS = 200;
     let timeout: ReturnType<typeof setTimeout>|undefined = undefined;
     const ARRIVALS: PouchDB.Core.ChangesResponseChange<{}>[] = [];
