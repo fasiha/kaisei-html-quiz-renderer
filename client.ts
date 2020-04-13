@@ -420,6 +420,7 @@ function Quiz(props: PageState) {
 
     const changes = db.changes({since: 'now', live: true, doc_ids: dbKeys, include_docs: true}).on('change', change => {
       if (!learned) { return; }  // if setLearned hasn't yet updated the state, just bail
+      console.log('changes!', change);
       if (change.deleted) {
         setLearned({...learned, [change.id]: {}});
         return;
@@ -452,17 +453,18 @@ function Quiz(props: PageState) {
   const ret = Object.keys(learned).map(key => {      // in Pouchdb (all quizzes ever learned or unlearned)
     if (key in props.facts && learned[key].ebisu) {  // also in redux (all quizzes in this doc) & learned
       const fact = props.facts[key];
+      const h2 = ce('h2', null, 'gonna quiz ' + key + ' model=' + learned[key].ebisu?.join(',') + ' lastSeen=' + learned[key].lastSeen);
       if (fact.factType === FactType.Particle || fact.factType === FactType.Conjugated) {
         const parentKey = key.split('/').slice(0, 2).join('/') + '/meaning';
         const parent = props.facts[parentKey];
         if (parent && parent.factType === FactType.Sentence) {
-          return ce('div', null, ce('h2', null, 'gonna quiz ' + key), ce(FactQuiz, {fact, quizKey: key, parent}));
+          return ce('div', null, h2, ce(FactQuiz, {fact, quizKey: key, parent}));
         }
         return ce('div', null, 'Failed to find parent');
       } else if (fact.factType === FactType.Vocab) {
-        return ce('div', null, ce('h2', null, 'gonna quiz ' + key), ce(FactQuiz, {fact, quizKey: key}));
+        return ce('div', null, h2, ce(FactQuiz, {fact, quizKey: key}));
       } else if (fact.factType === FactType.Sentence) {
-        return ce('div', null, ce('h2', null, 'gonna quiz ' + key), ce(FactQuiz, {fact, quizKey: key}));
+        return ce('div', null, h2, ce(FactQuiz, {fact, quizKey: key}));
       } else {
         assertNever(fact);
       }
@@ -490,12 +492,72 @@ function Quiz(props: PageState) {
   */
 }
 
+interface QuizEvent {
+  modelKey: string;
+  active: boolean;
+  date: string;
+  result: boolean;
+  newEbisu: EbisuModel;
+  extra: Partial<{response: string}>;
+}
+async function reviewSentence(quizKey: string, result: boolean, response?: string, date?: Date) {
+  // if `key = 'model/AAA/reading'`, `superkey = 'model/AAA'`.
+  const superkey = quizKey.split('/').slice(0, 2).join('/');
+  const res = await db.allDocs({startkey: superkey + '/', endkey: superkey + '/\ufff0'});
+  // https://docs.couchdb.org/en/stable/ddocs/views/collation.html#string-ranges
+
+  const relatedKeys = res.rows.map(r => r.id);
+  date = date || new Date();
+  const now = date.valueOf();
+  const stringyDate = date.toISOString();
+
+  // After Ebisu updater (active or passive), the quiz log info will be stored here
+  const events: Record<string, QuizEvent> = {};
+  const extra: QuizEvent['extra'] = response ? {response} : {};
+
+  // update memory models/timestamps and wait till completion
+  await Promise.all(relatedKeys.map(key => {
+    return db.upsert(key, (old: {id?: string}&Partial<Memory>) => {
+      const ebisuModel = old.ebisu;
+      const lastSeen = old.lastSeen;
+      if (ebisuModel && lastSeen) {
+        let newModel: Memory;
+        const active = key === quizKey;
+        if (active) {
+          const elapsedHours = (now - (new Date(lastSeen)).valueOf()) / 3600e3;
+          const newEbisu = ebisu.updateRecall(ebisuModel, result, elapsedHours)
+          newModel = {ebisu: newEbisu, lastSeen: stringyDate};
+        } else {
+          newModel = {ebisu: ebisuModel, lastSeen: stringyDate};
+        }
+        // for logging
+        events[key] = {modelKey: key, active, date: stringyDate, result, newEbisu: newModel.ebisu, extra};
+        return {...old, ...newModel};
+      }
+      return old;
+    });
+  }));
+
+  console.log('quiz events!', events);
+  // Then, add new Pouchdb docs documenting this update
+  const rand = Math.random().toString(36).slice(2);
+  const logPromises = relatedKeys.map((modelKey, i) => {
+    const eventKey = `quiz/${stringyDate}-${rand}-${i}`;
+    return db.upsert(eventKey, old => ({...old, ...events[modelKey]}))
+  });
+
+  return Promise.all(logPromises);
+}
+
 function FactQuiz(props: {fact: Keyed<Fact>, quizKey: string, parent?: Keyed<SentenceFact>}) {
   const {fact, quizKey} = props;
   const [input, setInput] = useState('')
   if (fact.factType === FactType.Sentence) {
     if (quizKey.endsWith('meaning')) {
-      const buttons = [ce('button', null, 'Yes!'), ce('button', null, 'No')];
+      const buttons = [
+        ce('button', {onClick: e => reviewSentence(quizKey, true)}, 'Yes!'),
+        ce('button', {onClick: e => reviewSentence(quizKey, false)}, 'No')
+      ];
       return ce('p', null, 'Do you know what this sentence means? ', ce(FuriganaComponent, {furiganas: fact.furigana}),
                 ...buttons);
     } else if (quizKey.endsWith('reading')) {
