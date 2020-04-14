@@ -288,6 +288,7 @@ type EbisuModel = ReturnType<typeof ebisu.defaultModel>;
 interface Memory {
   ebisu: EbisuModel;
   lastSeen: string;
+  version: '1';
 }
 function learnUnlearn(key: string, learn: boolean, date?: Date) {
   return db.upsert(key, old => {
@@ -296,7 +297,8 @@ function learnUnlearn(key: string, learn: boolean, date?: Date) {
     const ab = 3;          // unitless
     // the initial prior on recall probability will be Beta(ab, ab) in `halflife` time units. Instead of tweaking the
     // halflife when you first learn a fact, let's let users tweak it after a review.
-    const model: Memory = {ebisu: ebisu.defaultModel(halflife, ab), lastSeen: (date || new Date()).toISOString()};
+    const model:
+        Memory = {ebisu: ebisu.defaultModel(halflife, ab), lastSeen: (date || new Date()).toISOString(), version: '1'};
     return {...old, ...model};
   });
 }
@@ -513,11 +515,14 @@ function Quiz(props: PageState) {
 }
 
 interface QuizEvent {
+  version: '1';
   modelKey: string;
   active: boolean;
   date: string;
   result: boolean;
   newEbisu: EbisuModel;
+  oldEbisu: EbisuModel;
+  lastSeen: string;
   extra: Partial<{response: string}>;
 }
 async function reviewSentence(quizKey: string, result: boolean, response?: string, date?: Date) {
@@ -546,12 +551,22 @@ async function reviewSentence(quizKey: string, result: boolean, response?: strin
         if (active) {
           const elapsedHours = (now - (new Date(lastSeen)).valueOf()) / 3600e3;
           const newEbisu = ebisu.updateRecall(ebisuModel, result, elapsedHours)
-          newModel = {ebisu: newEbisu, lastSeen: stringyDate};
+          newModel = {version: '1', ebisu: newEbisu, lastSeen: stringyDate};
         } else {
-          newModel = {ebisu: ebisuModel, lastSeen: stringyDate};
+          newModel = {version: '1', ebisu: ebisuModel, lastSeen: stringyDate};
         }
         // for logging
-        events[key] = {modelKey: key, active, date: stringyDate, result, newEbisu: newModel.ebisu, extra};
+        events[key] = {
+          version: '1',
+          modelKey: key,
+          active,
+          date: stringyDate,
+          result,
+          newEbisu: newModel.ebisu,
+          extra,
+          oldEbisu: ebisuModel,
+          lastSeen
+        };
         return {...old, ...newModel};
       }
       return old;
