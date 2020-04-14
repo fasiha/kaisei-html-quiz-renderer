@@ -603,8 +603,6 @@ function FactQuiz(props: {fact: Keyed<Fact>, quizKey: string, parent?: Keyed<Sen
           const actual = kata2hira(input);
           const result = expected === actual.replace(/\s/g, '');
           reviewSentence(quizKey, result, actual);
-
-          console.log('result: ', {actual, expected});
         }
       },
                         'Submit');
@@ -618,9 +616,17 @@ function FactQuiz(props: {fact: Keyed<Fact>, quizKey: string, parent?: Keyed<Sen
     const {parent} = props;
     if (!parent) { throw new Error('parent not given'); }
     const text = furiganaToRuby(parent.furigana);
-    const hidden = text.replace(furiganaToRuby(fact.expected), '■■');
+    const expected = furiganaToRuby(fact.expected);
+    const hidden = text.replace(expected, '■■');
     const form = ce('input', {type: 'text', value: input, onChange: e => setInput(e.target.value)});
-    const submit = ce('button', null, 'Submit');
+    const submit = ce('button', {
+      onClick: e => {
+        const actual = kata2hira(input);
+        const result = expected === actual.replace(/\s/g, '');
+        reviewSentence(quizKey, result, actual);
+      }
+    },
+                      'Submit');
     return ce('p', null, 'Fill in the blank (sorry no furigana yet): ' + hidden + '. Hint: ',
               ce(FuriganaComponent, {furiganas: fact.hints}), form, submit);
   } else if (fact.factType === FactType.Particle) {
@@ -628,9 +634,16 @@ function FactQuiz(props: {fact: Keyed<Fact>, quizKey: string, parent?: Keyed<Sen
     if (!parent) { throw new Error('parent not given'); }
     const text = furiganaToRuby(parent.furigana);
     const {left, right, cloze} = fact;
-    const hidden = text.replace(`${left || ''}${cloze}${right || ''}`, '■■');
+    const hidden = text.replace(`${left || ''}${cloze}${right || ''}`, `${left || ''}■■${right || ''}`);
     const form = ce('input', {type: 'text', value: input, onChange: e => setInput(e.target.value)});
-    const submit = ce('button', null, 'Submit');
+    const submit = ce('button', {
+      onClick: e => {
+        const actual = kata2hira(input);
+        const result = cloze === actual.replace(/\s/g, '');
+        reviewSentence(quizKey, result, actual);
+      }
+    },
+                      'Submit');
     return ce('p', null, 'Fill in the blank: ' + hidden, form, submit);
   } else {
     assertNever(fact);
