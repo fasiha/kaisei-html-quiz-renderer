@@ -1,7 +1,7 @@
 import {argmin, hasKanji, kata2hira} from 'curtiz-utils';
 import * as ebisu from 'ebisu-js';
 import PouchDB from 'pouchdb';
-import {createElement, Fragment, useEffect, useState} from 'react';
+import {createContext, createElement, Dispatch, Fragment, useContext, useEffect, useReducer, useState} from 'react';
 import ReactDOM from 'react-dom';
 import {connect, Provider} from 'react-redux';
 import {AnyAction, createStore, Store} from "redux";
@@ -363,7 +363,7 @@ function addKeys(sentence: SentenceFact): Keyed<SentenceFact> {
   });
   return {...sentence, subfacts, keys};
 }
-function assertNever(x: never): never { throw new Error("Unexpected object: " + x); }
+function assertNever(x: never, note = 'Unexpected object: '): never { throw new Error(note + x); }
 
 // Redux step 1: actions
 enum ActionType {
@@ -401,11 +401,106 @@ type Db = PouchDB.Database<{}>;
 const db: Db = new PouchDB('kaisei');
 db.setMaxListeners(50);
 
+enum QuizStateType {
+  init = 'init',               // -> picking via action "startQuizSession"
+  picking = 'picking',         // -> quizzing via action "startQuiz"
+  quizzing = 'quizzing',       // -> feedbacking via action "failQuiz"
+                               // -> picking via action "startQuizSession"
+                               // -> init via action "doneQuizzing"
+  feedbacking = 'feedbacking'  // -> picking via action "startQuizSession"
+                               // -> init via action "doneQuizSession"
+}
+type QuizState_Init = {
+  state: QuizStateType.init
+};
+type QuizState_Picking = {
+  state: QuizStateType.picking
+};
+type QuizState_Quizzing = {
+  state: QuizStateType.quizzing,
+  action: QuizAction_StartQuiz
+};
+type QuizState_Feedbacking = {
+  state: QuizStateType.feedbacking,
+  action: QuizAction_FailQuiz
+};
+type QuizState = QuizState_Init|QuizState_Picking|QuizState_Quizzing|QuizState_Feedbacking;
+
+enum QuizActionType {
+  startQuizSession = 'startQuizSession',
+  startQuiz = 'startQuiz',
+  failQuiz = 'failQuiz',
+  doneQuizSession = 'doneQuizSession',
+}
+interface QuizAction_StartQuizSession {
+  type: QuizActionType.startQuizSession;
+}
+interface QuizAction_StartQuiz {
+  type: QuizActionType.startQuiz;
+  fact: Keyed<Fact>;
+  quizKey: string;
+  parent?: Keyed<SentenceFact>;
+}
+interface QuizAction_FailQuiz {
+  type: QuizActionType.failQuiz;
+  fact: Keyed<Fact>;
+  quizKey: string;
+  parent?: Keyed<SentenceFact>;
+  response: string;
+}
+interface QuizAction_DoneQuizzing {
+  type: QuizActionType.doneQuizSession;
+}
+type QuizAction = QuizAction_StartQuizSession|QuizAction_StartQuiz|QuizAction_FailQuiz|QuizAction_DoneQuizzing;
+const quizInitialState: QuizState = {
+  state: QuizStateType.init
+};
+
+function quizReducer(state: QuizState, action: QuizAction): QuizState {
+  if (state.state === QuizStateType.init) {
+    if (action.type === QuizActionType.startQuizSession) {
+      const newState: QuizState_Picking = {state: QuizStateType.picking};
+      return newState;
+    }
+  } else if (state.state === QuizStateType.picking) {
+    if (action.type === QuizActionType.startQuiz) {
+      const newState: QuizState_Quizzing = {state: QuizStateType.quizzing, action};
+      return newState;
+    }
+  } else if (state.state === QuizStateType.quizzing) {
+    if (action.type === QuizActionType.failQuiz) {
+      const newState: QuizState_Feedbacking = {state: QuizStateType.feedbacking, action};
+      return newState;
+    } else if (action.type === QuizActionType.startQuizSession) {
+      const newState: QuizState_Picking = {state: QuizStateType.picking};
+      return newState;
+    } else if (action.type === QuizActionType.doneQuizSession) {
+      const newState: QuizState_Init = {state: QuizStateType.init};
+      return newState;
+    }
+  } else if (state.state === QuizStateType.feedbacking) {
+    if (action.type === QuizActionType.startQuizSession) {
+      const newState: QuizState_Picking = {state: QuizStateType.picking};
+      return newState;
+    } else if (action.type === QuizActionType.doneQuizSession) {
+      const newState: QuizState_Init = {state: QuizStateType.init};
+      return newState;
+    }
+  } else {
+    assertNever(state, 'invalid action for state');
+  }
+  throw new Error('invalid action for state');
+}
+const QuizDispatch = createContext(null as unknown as Dispatch<QuizAction>);
+
 // Quiz app: props are all facts on THIS page: this comes from Redux (which we populated in `setup`). Then, from
 // Pouchdb, which persists even after browser closes, we load memory models.
 function Quiz(props: PageState) {
   const dbKeys = Object.keys(props.facts);
+  // contains Memory models from Pouchdb for the keys in this document (`dbKeys` above)
   const [learned, setLearned] = useState(undefined as undefined | Record<string, Partial<Memory>>);
+
+  const [stateMachine, dispatch] = useReducer(quizReducer, quizInitialState);
 
   useEffect(() => {
     if (!learned || (Object.keys(learned).length !== dbKeys.length)) {
@@ -430,8 +525,8 @@ function Quiz(props: PageState) {
     const changes = db.changes({since: 'now', live: true, doc_ids: dbKeys, include_docs: true}).on('change', change => {
       if (!learned) { return; }  // if setLearned hasn't yet updated the state, just bail
 
-      // if this is the first change arriving (ever, or after the last cooldown period expired), set a timer: when it
-      // goes off, call `setLearned` on whatever's in `ARRIVALS`.
+      // if this is the first change arriving (ever, or after the last cooldown period expired), set a timer: when
+      // it goes off, call `setLearned` on whatever's in `ARRIVALS`.
       if (timeout === undefined) {
         timeout = setTimeout(() => {
           // At the end of the cooldown period, commit changes to `setLearned`.
@@ -444,8 +539,8 @@ function Quiz(props: PageState) {
       ARRIVALS.push(change);
     });
     // The risk is that this component might re-render during an active cooldown period. If that happens, then the
-    // `setLearned` lambda inside the timer callback will no longer be valid. Therefore, if the component is unmounting,
-    // cancel the PouchDB changefeed but *also* cancel the cooldown timer.
+    // `setLearned` lambda inside the timer callback will no longer be valid. Therefore, if the component is
+    // unmounting, cancel the PouchDB changefeed but *also* cancel the cooldown timer.
     return () => {
       changes.cancel();
       if (timeout) { clearTimeout(timeout); }
@@ -454,64 +549,55 @@ function Quiz(props: PageState) {
 
   if (!learned) { return ce(Fragment, null, ''); }
 
-  const now = Date.now();
-  const status: {min?: [string, Memory]} = {};
-  argmin(Object.entries(learned), ([k, m]) => {
-    if (m.ebisu) {
-      const model = m as Memory;
-      const lastSeen = new Date(model.lastSeen).valueOf();
-      const elapsedHours = (now - lastSeen) / 3600e3;
-      const ret = ebisu.predictRecall(model.ebisu, elapsedHours);
-      return ret;
-    }
-    return Infinity;
-  }, status);
-  const toQuizKeyVal = status.min;
-  if (!toQuizKeyVal) { return ce(Fragment, null, 'Nothing to quiz!'); }
-  const toQuizKey = toQuizKeyVal[0];
-  const fact = toQuizKey in props.facts ? props.facts[toQuizKey] : undefined;
-  if (!fact) { return ce(Fragment, null, 'ERROR: best quiz from Pouchdb not in Redux?') }
+  // const wrapProvider = (...args:any)=>ce(QuizDispatch.Provider, {value:dispatch}, ...args);
 
-  const ret = Object.keys(learned).map(key => {      // in Pouchdb (all quizzes ever learned or unlearned)
-    if (key in props.facts && learned[key].ebisu) {  // also in redux (all quizzes in this doc) & learned
-      const fact = props.facts[key];
-      const h2 = ce('h2', null, 'gonna quiz ' + key + ' model=' + learned[key].ebisu?.join(',') + ' lastSeen=' + learned[key].lastSeen);
-      if (fact.factType === FactType.Particle || fact.factType === FactType.Conjugated) {
-        const parentKey = key.split('/').slice(0, 2).join('/') + '/meaning';
-        const parent = props.facts[parentKey];
-        if (parent && parent.factType === FactType.Sentence) {
-          return ce('div', null, h2, ce(FactQuiz, {fact, quizKey: key, parent}));
-        }
-        return ce('div', null, 'Failed to find parent');
-      } else if (fact.factType === FactType.Vocab) {
-        return ce('div', null, h2, ce(FactQuiz, {fact, quizKey: key}));
-      } else if (fact.factType === FactType.Sentence) {
-        return ce('div', null, h2, ce(FactQuiz, {fact, quizKey: key}));
-      } else {
-        assertNever(fact);
+  if (stateMachine.state === QuizStateType.init) {
+    const possible = Object.values(learned).filter(o => !!o.ebisu).length;
+    if (possible === 0) { return ce('p', null, `Facts known: 0! 'Learn some!`); }
+    const button = ce('button', {onClick: e => dispatch({type: QuizActionType.startQuizSession})}, 'Review!');
+    return ce('p', null, `Facts known: ${possible}! Shall we review? `, button);
+  } else if (stateMachine.state === QuizStateType.picking) {
+    const now = Date.now();
+    const status: {min?: [string, Memory]} = {};
+    argmin(Object.entries(learned), ([k, m]) => {
+      if (m.ebisu) {
+        const model = m as Memory;
+        const lastSeen = new Date(model.lastSeen).valueOf();
+        const elapsedHours = (now - lastSeen) / 3600e3;
+        const ret = ebisu.predictRecall(model.ebisu, elapsedHours);
+        return ret;
       }
-    }
-    return undefined;
-  });
-  return ce('div', null, ...ret.filter(x => !!x));
+      return Infinity;
+    }, status);
+    const toQuizKeyVal = status.min;
+    if (!toQuizKeyVal) { return ce(Fragment, null, 'Nothing to quiz!'); }
+    const toQuizKey = toQuizKeyVal[0];
+    const fact = toQuizKey in props.facts ? props.facts[toQuizKey] : undefined;
+    if (!fact) { return ce(Fragment, null, 'ERROR: best quiz from Pouchdb not in Redux?') }
 
-  /*
-  if (fact.factType === FactType.Particle || fact.factType === FactType.Conjugated) {
     const parentKey = toQuizKey.split('/').slice(0, 2).join('/') + '/meaning';
     const parent = props.facts[parentKey];
-    if (parent && parent.factType === FactType.Sentence) {
-      return ce('div', null, ce('h2', null, 'gonna quiz ' + toQuizKey),
-                ce(FactQuiz, {fact, quizKey: toQuizKey, parent}));
-    }
-    return ce('div', null, 'Failed to find parent');
-  } else if (fact.factType === FactType.Vocab) {
-    return ce('div', null, ce('h2', null, 'gonna quiz ' + toQuizKey), ce(FactQuiz, {fact, quizKey: toQuizKey}));
-  } else if (fact.factType === FactType.Sentence) {
-    return ce('div', null, ce('h2', null, 'gonna quiz ' + toQuizKey), ce(FactQuiz, {fact, quizKey: toQuizKey}));
+    const action: QuizAction_StartQuiz = {
+      type: QuizActionType.startQuiz,
+      fact,
+      quizKey: toQuizKey,
+      parent: parent && parent.factType === FactType.Sentence ? parent : undefined
+    };
+    dispatch(action);
+  } else if (stateMachine.state === QuizStateType.quizzing) {
+    const {quizKey, fact, parent} = stateMachine.action;
+    const props = {quizKey, fact, parent};
+    const model = learned[quizKey].ebisu ?.join(',');
+    return ce('div', null,
+              ce('h2', null, `gonna quiz ${quizKey}, model=${model}, last seen=${learned[quizKey].lastSeen}`),
+              ce(QuizDispatch.Provider, {value: dispatch as any}, ce(FactQuiz, props)));
+  } else if (stateMachine.state === QuizStateType.feedbacking) {
+    const button = ce('button', {onClick: e => dispatch({type: QuizActionType.startQuizSession})}, 'Review!');
+    return ce('div', null, 'Oops you got that wrong! <insert feedback>. Onward!', button);
   } else {
-    assertNever(fact);
+    assertNever(stateMachine);
   }
-  */
+  return ce('div', null, 'typescript pacification');
 }
 
 interface QuizEvent {
@@ -586,12 +672,28 @@ async function reviewSentence(quizKey: string, result: boolean, response?: strin
 function FactQuiz(props: {fact: Keyed<Fact>, quizKey: string, parent?: Keyed<SentenceFact>}) {
   const {fact, quizKey} = props;
   const [input, setInput] = useState('');
+  const dispatch = useContext(QuizDispatch);
 
   if (fact.factType === FactType.Sentence) {
     if (quizKey.endsWith('meaning')) {
       const buttons = [
-        ce('button', {onClick: e => reviewSentence(quizKey, true)}, 'Yes!'),
-        ce('button', {onClick: e => reviewSentence(quizKey, false)}, 'No')
+        ce('button', {
+          onClick: e => {
+            const action: QuizAction_StartQuizSession = {type: QuizActionType.startQuizSession};
+            dispatch(action);
+            reviewSentence(quizKey, true)
+          }
+        },
+           'Yes!'),
+        ce('button', {
+          onClick: e => {
+            const action: QuizAction_FailQuiz =
+                {type: QuizActionType.failQuiz, fact, quizKey, parent: props.parent, response: ''};
+            dispatch(action);
+            reviewSentence(quizKey, false)
+          }
+        },
+           'No')
       ];
       return ce('p', null, 'Do you know what this sentence means? ', ce(FuriganaComponent, {furiganas: fact.furigana}),
                 ...buttons);
@@ -602,6 +704,15 @@ function FactQuiz(props: {fact: Keyed<Fact>, quizKey: string, parent?: Keyed<Sen
           const expected = furiganaToHiragana(fact.furigana).replace(/\s/g, '');
           const actual = kata2hira(input);
           const result = expected === actual.replace(/\s/g, '');
+
+          if (result) {
+            const action: QuizAction_StartQuizSession = {type: QuizActionType.startQuizSession};
+            dispatch(action);
+          } else {
+            const action: QuizAction_FailQuiz =
+                {type: QuizActionType.failQuiz, fact, quizKey, parent: props.parent, response: actual};
+            dispatch(action);
+          }
           reviewSentence(quizKey, result, actual);
         }
       },
@@ -623,6 +734,14 @@ function FactQuiz(props: {fact: Keyed<Fact>, quizKey: string, parent?: Keyed<Sen
       onClick: e => {
         const actual = kata2hira(input);
         const result = expected === actual.replace(/\s/g, '');
+        if (result) {
+          const action: QuizAction_StartQuizSession = {type: QuizActionType.startQuizSession};
+          dispatch(action);
+        } else {
+          const action: QuizAction_FailQuiz =
+              {type: QuizActionType.failQuiz, fact, quizKey, parent: props.parent, response: actual};
+          dispatch(action);
+        }
         reviewSentence(quizKey, result, actual);
       }
     },
@@ -640,6 +759,14 @@ function FactQuiz(props: {fact: Keyed<Fact>, quizKey: string, parent?: Keyed<Sen
       onClick: e => {
         const actual = kata2hira(input);
         const result = cloze === actual.replace(/\s/g, '');
+        if (result) {
+          const action: QuizAction_StartQuizSession = {type: QuizActionType.startQuizSession};
+          dispatch(action);
+        } else {
+          const action: QuizAction_FailQuiz =
+              {type: QuizActionType.failQuiz, fact, quizKey, parent: props.parent, response: actual};
+          dispatch(action);
+        }
         reviewSentence(quizKey, result, actual);
       }
     },
