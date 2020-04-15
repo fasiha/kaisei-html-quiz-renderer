@@ -442,7 +442,7 @@ enum QuizStateType {
   init = 'init',               // -> picking via action "startQuizSession"
   picking = 'picking',         // -> quizzing via action "startQuiz"
   quizzing = 'quizzing',       // -> feedbacking via action "failQuiz"
-                               // -> picking via action "startQuizSession"
+                               // -> picking via action "startQuizSession" (either success or if quiz deleted)
                                // -> init via action "doneQuizzing"
   feedbacking = 'feedbacking'  // -> picking via action "startQuizSession"
                                // -> init via action "doneQuizSession"
@@ -536,7 +536,6 @@ function Quiz(props: PageState) {
   const memories = props.memories;
   const [stateMachine, dispatch] = useReducer(quizReducer, quizInitialState);
 
-  // FIXME unlearning a fact as you're studying it won't update the quiz state machine
   // console.log({props, stateMachine})
 
   if (stateMachine.state === QuizStateType.init) {
@@ -575,6 +574,11 @@ function Quiz(props: PageState) {
     dispatch(action);
   } else if (stateMachine.state === QuizStateType.quizzing) {
     const {quizKey, fact, parent} = stateMachine.action;
+    if (!(memories[quizKey] && memories[quizKey].ebisu)) {
+      // quiz must have been unlearned
+      const action: QuizAction_StartQuizSession = {type: QuizActionType.startQuizSession};
+      dispatch(action);
+    }
     const props = {quizKey, fact, parent};
     const model = memories[quizKey].ebisu ?.join(',');
     return ce('div', null,
