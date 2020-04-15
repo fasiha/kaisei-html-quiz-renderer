@@ -1,4 +1,4 @@
-import {argmin, hasKanji, kata2hira} from 'curtiz-utils';
+import {argmin, flatmap, hasKanji, kata2hira} from 'curtiz-utils';
 import * as ebisu from 'ebisu-js';
 import PouchDB from 'pouchdb';
 import {createContext, createElement, Dispatch, Fragment, useContext, useEffect, useReducer, useState} from 'react';
@@ -305,6 +305,7 @@ function learnUnlearn(key: string, learn: boolean, date?: Date) {
 
 export function setup() {
   const details = document.querySelectorAll('details.quizzable');
+  const allKeys: string[] = [];
   for (const detail of details) {
     const sentence = detail.querySelector('.quizzable.sentence');
     if (!sentence) {
@@ -328,7 +329,29 @@ export function setup() {
     pageStore.dispatch(action)
 
     ReactDOM.render(ce(Sentence, {fact}), detail);
+
+    allKeys.push(...fact.keys.concat(flatmap(fact.subfacts, o => o.keys)));
   }
+
+  async function init(dbKeys: string[]) {
+    const memories: Record<string, Partial<Memory>> = {};
+    for (const key of dbKeys) {
+      try {
+        const model = await db.get(key) as Memory;
+        memories[key] = model;
+      } catch { memories[key] = {}; }
+    }
+    const action: UpdatingMemoryAction = {type: ActionType.updatingMemories, memories};
+    pageStore.dispatch(action);
+  }
+  init(allKeys);
+
+  // TODO is it more efficient to use `doc_ids` or just filter?
+  db.changes({since: 'now', live: true, doc_ids: allKeys, include_docs: true}).on('change', change => {
+    const memories = {[change.id]: change.deleted ? {} : change.doc as unknown as Memory};
+    const action: UpdatingMemoryAction = {type: ActionType.updatingMemories, memories};
+    pageStore.dispatch(action);
+  });
 }
 
 /** Adds `keys` field to any fact */
@@ -368,28 +391,42 @@ function assertNever(x: never, note = 'Unexpected object: '): never { throw new 
 // Redux step 1: actions
 enum ActionType {
   addFacts = 'addFacts',
+  updatingMemories = 'updatingMemories',
 }
 interface AddFactsAction {
   type: ActionType.addFacts;
   facts: Keyed<Fact>[];
 }
-type Action = AddFactsAction;
+interface UpdatingMemoryAction {
+  type: ActionType.updatingMemories;
+  memories: Record<string, Partial<Memory>>;
+}
+type Action = AddFactsAction|UpdatingMemoryAction;
 // Redux step 2: state
 interface PageState {
   facts: {[k: string]: Keyed<Fact>};
+  memories: Record<string, Partial<Memory>>;
+  // partial because Pouchdb will store deleted docs as {} (exactly so that changes can be picked up)
 }
 const initialState: PageState = {
-  facts: {}
+  facts: {},
+  memories: {}
 };
 // Redux step 3: reducer
-function reducer(state: PageState = initialState, action: Action) {
+function neverOk(x: never) {};
+function reducer(state: PageState = initialState, action: Action): PageState {
   if (action.type === ActionType.addFacts) {
     const o: {[k: string]: Keyed<Fact>} = {};
     for (const f of action.facts) {
       for (const k of f.keys) { o[k] = f; }
     }
-    return {facts: {...state.facts, ...o}};
+    return {...state, facts: {...state.facts, ...o}};
+  } else if (action.type === ActionType.updatingMemories) {
+    return {...state, memories: {...state.memories, ...action.memories}};
   }
+  // Redux actually sends in actions with types I don't know about so I need to return those but I do want to make sure
+  // the above if/else ladder covers every action type I know about so this guarantees that
+  neverOk(action);
   return state;
 }
 // Redux step 4: store
@@ -496,75 +533,27 @@ const QuizDispatch = createContext(null as unknown as Dispatch<QuizAction>);
 // Quiz app: props are all facts on THIS page: this comes from Redux (which we populated in `setup`). Then, from
 // Pouchdb, which persists even after browser closes, we load memory models.
 function Quiz(props: PageState) {
-  const dbKeys = Object.keys(props.facts);
-  // contains Memory models from Pouchdb for the keys in this document (`dbKeys` above)
-  const [learned, setLearned] = useState(undefined as undefined | Record<string, Partial<Memory>>);
-
+  const memories = props.memories;
   const [stateMachine, dispatch] = useReducer(quizReducer, quizInitialState);
 
-  useEffect(() => {
-    if (!learned || (Object.keys(learned).length !== dbKeys.length)) {
-      async function init(dbKeys: string[]) {
-        const learned: Record<string, Partial<Memory>> = {};
-        for (const key of dbKeys) {
-          try {
-            const model = await db.get(key) as Memory;
-            learned[key] = model;
-          } catch { learned[key] = {}; }
-        }
-        setLearned(learned);
-      }
-      init(dbKeys);
-    }
-
-    // Lightweight one-off lossless-throttle for the changes event emitter: enforce a cooldown period, collecting
-    // changes, before applying them. TODO: move this into Redux.
-    const COOLDOWN_MS = 200;
-    let timeout: ReturnType<typeof setTimeout>|undefined = undefined;
-    const ARRIVALS: PouchDB.Core.ChangesResponseChange<{}>[] = [];
-    const changes = db.changes({since: 'now', live: true, doc_ids: dbKeys, include_docs: true}).on('change', change => {
-      if (!learned) { return; }  // if setLearned hasn't yet updated the state, just bail
-
-      // if this is the first change arriving (ever, or after the last cooldown period expired), set a timer: when
-      // it goes off, call `setLearned` on whatever's in `ARRIVALS`.
-      if (timeout === undefined) {
-        timeout = setTimeout(() => {
-          // At the end of the cooldown period, commit changes to `setLearned`.
-          const o: typeof learned = {};
-          for (const change of ARRIVALS) { o[change.id] = change.deleted ? {} : change.doc as unknown as Memory; };
-          setLearned({...learned, ...o});
-        }, COOLDOWN_MS);
-      }
-      // as changes appear during the active cooldown, put them in `ARRIVALS`.
-      ARRIVALS.push(change);
-    });
-    // The risk is that this component might re-render during an active cooldown period. If that happens, then the
-    // `setLearned` lambda inside the timer callback will no longer be valid. Therefore, if the component is
-    // unmounting, cancel the PouchDB changefeed but *also* cancel the cooldown timer.
-    return () => {
-      changes.cancel();
-      if (timeout) { clearTimeout(timeout); }
-    };
-  });
-
-  if (!learned) { return ce(Fragment, null, ''); }
-
-  // const wrapProvider = (...args:any)=>ce(QuizDispatch.Provider, {value:dispatch}, ...args);
+  // FIXME unlearning a fact as you're studying it won't update the quiz state machine
+  // console.log({props, stateMachine})
 
   if (stateMachine.state === QuizStateType.init) {
-    const possible = Object.values(learned).filter(o => !!o.ebisu).length;
-    if (possible === 0) { return ce('p', null, `Facts known: 0! 'Learn some!`); }
+    const possible = Object.values(memories).filter(o => !!o.ebisu).length;
+    if (possible === 0) { return ce('p', null, `Facts known: 0! Learn some!`); }
     const button = ce('button', {onClick: e => dispatch({type: QuizActionType.startQuizSession})}, 'Review!');
     return ce('p', null, `Facts known: ${possible}! Shall we review? `, button);
   } else if (stateMachine.state === QuizStateType.picking) {
     const now = Date.now();
     const status: {min?: [string, Memory]} = {};
-    argmin(Object.entries(learned), ([k, m]) => {
+    argmin(Object.entries(memories), ([k, m]) => {
       if (m.ebisu) {
         const model = m as Memory;
         const lastSeen = new Date(model.lastSeen).valueOf();
         const elapsedHours = (now - lastSeen) / 3600e3;
         const ret = ebisu.predictRecall(model.ebisu, elapsedHours);
+        // console.log({k, ebisu: model.ebisu.join(','), lastseen: model.lastSeen, ret});
         return ret;
       }
       return Infinity;
@@ -587,9 +576,9 @@ function Quiz(props: PageState) {
   } else if (stateMachine.state === QuizStateType.quizzing) {
     const {quizKey, fact, parent} = stateMachine.action;
     const props = {quizKey, fact, parent};
-    const model = learned[quizKey].ebisu ?.join(',');
+    const model = memories[quizKey].ebisu ?.join(',');
     return ce('div', null,
-              ce('h2', null, `gonna quiz ${quizKey}, model=${model}, last seen=${learned[quizKey].lastSeen}`),
+              ce('h2', null, `gonna quiz ${quizKey}, model=${model}, last seen=${memories[quizKey].lastSeen}`),
               ce(QuizDispatch.Provider, {value: dispatch as any}, ce(FactQuiz, props)));
   } else if (stateMachine.state === QuizStateType.feedbacking) {
     const button = ce('button', {onClick: e => dispatch({type: QuizActionType.startQuizSession})}, 'Review!');
@@ -678,19 +667,19 @@ function FactQuiz(props: {fact: Keyed<Fact>, quizKey: string, parent?: Keyed<Sen
     if (quizKey.endsWith('meaning')) {
       const buttons = [
         ce('button', {
-          onClick: e => {
+          onClick: async e => {
+            await reviewSentence(quizKey, true)
             const action: QuizAction_StartQuizSession = {type: QuizActionType.startQuizSession};
             dispatch(action);
-            reviewSentence(quizKey, true)
           }
         },
            'Yes!'),
         ce('button', {
-          onClick: e => {
+          onClick: async e => {
+            await reviewSentence(quizKey, false)
             const action: QuizAction_FailQuiz =
                 {type: QuizActionType.failQuiz, fact, quizKey, parent: props.parent, response: ''};
             dispatch(action);
-            reviewSentence(quizKey, false)
           }
         },
            'No')
@@ -700,10 +689,11 @@ function FactQuiz(props: {fact: Keyed<Fact>, quizKey: string, parent?: Keyed<Sen
     } else if (quizKey.endsWith('reading')) {
       const form = ce('input', {type: 'text', value: input, onChange: e => setInput(e.target.value)});
       const submit = ce('button', {
-        onClick: e => {
+        onClick: async e => {
           const expected = furiganaToHiragana(fact.furigana).replace(/\s/g, '');
           const actual = kata2hira(input);
           const result = expected === actual.replace(/\s/g, '');
+          await reviewSentence(quizKey, result, actual);
 
           if (result) {
             const action: QuizAction_StartQuizSession = {type: QuizActionType.startQuizSession};
@@ -713,7 +703,6 @@ function FactQuiz(props: {fact: Keyed<Fact>, quizKey: string, parent?: Keyed<Sen
                 {type: QuizActionType.failQuiz, fact, quizKey, parent: props.parent, response: actual};
             dispatch(action);
           }
-          reviewSentence(quizKey, result, actual);
         }
       },
                         'Submit');
@@ -731,9 +720,11 @@ function FactQuiz(props: {fact: Keyed<Fact>, quizKey: string, parent?: Keyed<Sen
     const hidden = text.replace(expected, '■■');
     const form = ce('input', {type: 'text', value: input, onChange: e => setInput(e.target.value)});
     const submit = ce('button', {
-      onClick: e => {
+      onClick: async e => {
         const actual = kata2hira(input);
         const result = expected === actual.replace(/\s/g, '');
+        await reviewSentence(quizKey, result, actual);
+
         if (result) {
           const action: QuizAction_StartQuizSession = {type: QuizActionType.startQuizSession};
           dispatch(action);
@@ -742,7 +733,6 @@ function FactQuiz(props: {fact: Keyed<Fact>, quizKey: string, parent?: Keyed<Sen
               {type: QuizActionType.failQuiz, fact, quizKey, parent: props.parent, response: actual};
           dispatch(action);
         }
-        reviewSentence(quizKey, result, actual);
       }
     },
                       'Submit');
@@ -756,9 +746,11 @@ function FactQuiz(props: {fact: Keyed<Fact>, quizKey: string, parent?: Keyed<Sen
     const hidden = text.replace(`${left || ''}${cloze}${right || ''}`, `${left || ''}■■${right || ''}`);
     const form = ce('input', {type: 'text', value: input, onChange: e => setInput(e.target.value)});
     const submit = ce('button', {
-      onClick: e => {
+      onClick: async e => {
         const actual = kata2hira(input);
         const result = cloze === actual.replace(/\s/g, '');
+        await reviewSentence(quizKey, result, actual);
+
         if (result) {
           const action: QuizAction_StartQuizSession = {type: QuizActionType.startQuizSession};
           dispatch(action);
@@ -767,7 +759,6 @@ function FactQuiz(props: {fact: Keyed<Fact>, quizKey: string, parent?: Keyed<Sen
               {type: QuizActionType.failQuiz, fact, quizKey, parent: props.parent, response: actual};
           dispatch(action);
         }
-        reviewSentence(quizKey, result, actual);
       }
     },
                       'Submit');
@@ -777,6 +768,6 @@ function FactQuiz(props: {fact: Keyed<Fact>, quizKey: string, parent?: Keyed<Sen
   }
 }
 
-function mapStateToProps(state: PageState) { return {facts: state.facts}; }
+function mapStateToProps(state: PageState) { return {...state}; }
 const QuizContainer = connect(mapStateToProps, {})(Quiz);
 ReactDOM.render(ce(Provider, {store: pageStore}, ce(QuizContainer, null)), document.querySelector('#quiz-app'));
