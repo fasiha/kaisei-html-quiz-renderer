@@ -457,6 +457,7 @@ function Quiz(props) {
     const memories = props.memories;
     const [stateMachine, dispatch] = react_1.useReducer(quizReducer, quizInitialState);
     // console.log({props, stateMachine})
+    const nothing = ce('div', null, 'typescript pacification');
     if (stateMachine.state === QuizStateType.init) {
         const possible = Object.values(memories).filter(o => !!o.ebisu).length;
         if (possible === 0) {
@@ -497,7 +498,7 @@ function Quiz(props) {
             parent: parent && parent.factType === FactType.Sentence ? parent : undefined
         };
         dispatch(action);
-        return;
+        return nothing;
     }
     else if (stateMachine.state === QuizStateType.quizzing) {
         const { quizKey, fact, parent } = stateMachine.action;
@@ -506,7 +507,7 @@ function Quiz(props) {
             // quiz must have been unlearned
             const action = { type: QuizActionType.startQuizSession };
             dispatch(action);
-            return;
+            return nothing;
         }
         const props = { quizKey, fact, parent };
         const model = memory.ebisu.join(',');
@@ -519,7 +520,6 @@ function Quiz(props) {
     else {
         assertNever(stateMachine);
     }
-    return ce('div', null, 'typescript pacification');
 }
 async function reviewSentence(quizKey, result, response, date) {
     // if `key = 'model/AAA/reading'`, `superkey = 'model/AAA'`.

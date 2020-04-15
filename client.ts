@@ -537,7 +537,7 @@ function Quiz(props: PageState) {
   const [stateMachine, dispatch] = useReducer(quizReducer, quizInitialState);
 
   // console.log({props, stateMachine})
-
+  const nothing = ce('div', null, 'typescript pacification');
   if (stateMachine.state === QuizStateType.init) {
     const possible = Object.values(memories).filter(o => !!o.ebisu).length;
     if (possible === 0) { return ce('p', null, `Facts known: 0! Learn some!`); }
@@ -572,7 +572,7 @@ function Quiz(props: PageState) {
       parent: parent && parent.factType === FactType.Sentence ? parent : undefined
     };
     dispatch(action);
-    return;
+    return nothing;
   } else if (stateMachine.state === QuizStateType.quizzing) {
     const {quizKey, fact, parent} = stateMachine.action;
     const memory: Partial<Memory>|undefined = memories[quizKey];
@@ -580,7 +580,7 @@ function Quiz(props: PageState) {
       // quiz must have been unlearned
       const action: QuizAction_StartQuizSession = {type: QuizActionType.startQuizSession};
       dispatch(action);
-      return;
+      return nothing;
     }
     const props = {quizKey, fact, parent};
     const model = memory.ebisu.join(',');
@@ -590,9 +590,8 @@ function Quiz(props: PageState) {
   } else if (stateMachine.state === QuizStateType.feedbacking) {
     const button = ce('button', {onClick: e => dispatch({type: QuizActionType.startQuizSession})}, 'Review!');
     return ce('div', null, 'Oops you got that wrong! <insert feedback>. Onward!', button);
-  } else {
-    assertNever(stateMachine);
   }
+  assertNever(stateMachine);
 }
 
 interface QuizEvent {
