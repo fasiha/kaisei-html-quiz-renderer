@@ -454,7 +454,6 @@ const QuizDispatch = react_1.createContext(null);
 // Quiz app: props are all facts on THIS page: this comes from Redux (which we populated in `setup`). Then, from
 // Pouchdb, which persists even after browser closes, we load memory models.
 function Quiz(props) {
-    var _a;
     const memories = props.memories;
     const [stateMachine, dispatch] = react_1.useReducer(quizReducer, quizInitialState);
     // console.log({props, stateMachine})
@@ -498,16 +497,19 @@ function Quiz(props) {
             parent: parent && parent.factType === FactType.Sentence ? parent : undefined
         };
         dispatch(action);
+        return;
     }
     else if (stateMachine.state === QuizStateType.quizzing) {
         const { quizKey, fact, parent } = stateMachine.action;
-        if (!(memories[quizKey] && memories[quizKey].ebisu)) {
+        const memory = memories[quizKey];
+        if (!(memory && memory.ebisu)) {
             // quiz must have been unlearned
             const action = { type: QuizActionType.startQuizSession };
             dispatch(action);
+            return;
         }
         const props = { quizKey, fact, parent };
-        const model = (_a = memories[quizKey].ebisu) === null || _a === void 0 ? void 0 : _a.join(',');
+        const model = memory.ebisu.join(',');
         return ce('div', null, ce('h2', null, `gonna quiz ${quizKey}, model=${model}, last seen=${memories[quizKey].lastSeen}`), ce(QuizDispatch.Provider, { value: dispatch }, ce(FactQuiz, props)));
     }
     else if (stateMachine.state === QuizStateType.feedbacking) {

@@ -572,15 +572,18 @@ function Quiz(props: PageState) {
       parent: parent && parent.factType === FactType.Sentence ? parent : undefined
     };
     dispatch(action);
+    return;
   } else if (stateMachine.state === QuizStateType.quizzing) {
     const {quizKey, fact, parent} = stateMachine.action;
-    if (!(memories[quizKey] && memories[quizKey].ebisu)) {
+    const memory: Partial<Memory>|undefined = memories[quizKey];
+    if (!(memory && memory.ebisu)) {
       // quiz must have been unlearned
       const action: QuizAction_StartQuizSession = {type: QuizActionType.startQuizSession};
       dispatch(action);
+      return;
     }
     const props = {quizKey, fact, parent};
-    const model = memories[quizKey].ebisu ?.join(',');
+    const model = memory.ebisu.join(',');
     return ce('div', null,
               ce('h2', null, `gonna quiz ${quizKey}, model=${model}, last seen=${memories[quizKey].lastSeen}`),
               ce(QuizDispatch.Provider, {value: dispatch as any}, ce(FactQuiz, props)));
@@ -590,7 +593,6 @@ function Quiz(props: PageState) {
   } else {
     assertNever(stateMachine);
   }
-  return ce('div', null, 'typescript pacification');
 }
 
 interface QuizEvent {
