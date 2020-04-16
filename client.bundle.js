@@ -728,7 +728,7 @@ function FactQuiz(props) {
                 }
             }
         }, 'Submit');
-        return ce('p', null, 'Fill in the blank (sorry no furigana yet): ' + hidden + '. Hint: ', ce(FuriganaComponent, { furiganas: fact.hints }), form, submit);
+        return ce('div', null, 'Fill in the blank (sorry no furigana yet): ' + hidden, form, submit, ce('ul', null, ce('li', null, 'Hint: ', ce(FuriganaComponent, { furiganas: fact.hints })), ...Object.values(parent.translation).map(s => ce('li', null, s))));
     }
     else if (fact.factType === FactType.Particle) {
         const { parent } = props;
@@ -754,7 +754,7 @@ function FactQuiz(props) {
                 }
             }
         }, 'Submit');
-        return ce('p', null, 'Fill in the blank: ' + hidden, form, submit);
+        return ce('div', null, 'Fill in the blank: ' + hidden, form, submit, ce('ul', null, ...Object.values(parent.translation).map(s => ce('li', null, s))));
     }
     else {
         assertNever(fact);
