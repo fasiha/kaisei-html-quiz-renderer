@@ -154,9 +154,42 @@ function FuriganaComponent(props: {furiganas: Furigana[]}) {
             ...props.furiganas.map(o => typeof o === 'string' ? o : ce('ruby', null, o.ruby, ce('rt', null, o.rt))))
 }
 
-function VocabComponent(props: {fact: VocabFact}) {
-  return ce(Fragment, null, props.fact.kanjiKana.join('・'), '：', props.fact.definition);
+function VocabComponent(props: {fact: Keyed<VocabFact>}) {
+  const [learned, setLearned] = useState(undefined as undefined | Record<string, boolean>);
+  const dbKeys = props.fact.keys;
+
+  useEffect(() => {
+    if (!learned) {
+      async function init(dbKeys: string[]) {
+        const learned: Record<string, boolean> = {};
+        for (const key of dbKeys) {
+          try {
+            await db.get(key);
+            learned[key] = true;
+          } catch { learned[key] = false; }
+        }
+        setLearned(learned);
+      }
+      init(dbKeys);
+    }
+
+    const changes = db.changes({since: 'now', live: true, doc_ids: dbKeys}).on('change', change => {
+      if (!learned) { return; }  // if setLearned hasn't yet updated the state, just bail
+      setLearned({...learned, [change.id]: !change.deleted});
+    });
+    return () => changes.cancel();  // to cancel the listener when component unmounts.
+  });
+
+  if (typeof learned === 'undefined') { return ce(Fragment, null, ''); }
+  const buttons = dbKeys.map(key => {
+    const thisLearned = learned[key] ? 'unlearn' : 'learn!';
+    const display = key.endsWith('meaning') ? 'Meaning' : 'Reading';
+    return ce('button', {onClick: e => learnUnlearn(key, !(learned[key]))}, `${display} ${thisLearned}`);
+  });
+
+  return ce(Fragment, null, props.fact.kanjiKana.join('・'), '：', props.fact.definition, ...buttons);
 }
+
 function ParticleComponent(props: {fact: Keyed<ParticleFact>}) {
   const dbKey = props.fact.keys[0];
   const [learned, setLearned] = useState(undefined as undefined | boolean);
@@ -380,7 +413,10 @@ function addKeys(sentence: SentenceFact): Keyed<SentenceFact> {
       const particleKey = [o.left, o.cloze, o.right].join('_');
       return { ...o, keys: [`model/${text}/particle/${particleKey}`] }
     } else if (o.factType === FactType.Vocab) {
-      return { ...o, keys: [] }
+      const k = o.kanjiKana.join(',');
+      const keys = [`model/${k}/meaning`];
+      if (hasKanji(k)) { keys.push(`model/${k}/reading`); }
+      return {...o, keys};
     }
     assertNever(o);
   });
@@ -705,7 +741,7 @@ function FactQuiz(props: {fact: Keyed<Fact>, quizKey: string, parent?: Keyed<Sen
             dispatch(action);
           } else {
             const action: QuizAction_FailQuiz =
-                {type: QuizActionType.failQuiz, fact, quizKey, parent: props.parent, response: actual};
+                {type: QuizActionType.failQuiz, fact, quizKey, parent: props.parent, response: input};
             dispatch(action);
           }
         }
@@ -716,7 +752,52 @@ function FactQuiz(props: {fact: Keyed<Fact>, quizKey: string, parent?: Keyed<Sen
       throw new Error('unknown sentence quiz type');
     }
   } else if (fact.factType === FactType.Vocab) {
-    return ce('p', null, 'unimplemented');
+    if (quizKey.endsWith('meaning')) {
+      const buttons = [
+        ce('button', {
+          onClick: async e => {
+            await reviewSentence(quizKey, true)
+            const action: QuizAction_StartQuizSession = {type: QuizActionType.startQuizSession};
+            dispatch(action);
+          }
+        },
+           'Yes!'),
+        ce('button', {
+          onClick: async e => {
+            await reviewSentence(quizKey, false)
+            const action: QuizAction_FailQuiz =
+                {type: QuizActionType.failQuiz, fact, quizKey, parent: props.parent, response: ''};
+            dispatch(action);
+          }
+        },
+           'No')
+      ];
+      return ce('p', null, 'Do you know what this vocabulary means? ', fact.kanjiKana.join('・'), ...buttons);
+    } else if (quizKey.endsWith('reading')) {
+      const form = ce('input', {type: 'text', value: input, onChange: e => setInput(e.target.value)});
+      const submit = ce('button', {
+        onClick: async e => {
+          const expected = fact.kanjiKana.filter(s => !hasKanji(s)).map(kata2hira);
+          const actual = kata2hira(input).trim();
+          const result = expected.indexOf(actual) >= 0;
+          await reviewSentence(quizKey, result, actual);
+
+          if (result) {
+            const action: QuizAction_StartQuizSession = {type: QuizActionType.startQuizSession};
+            dispatch(action);
+          } else {
+            const action: QuizAction_FailQuiz =
+                {type: QuizActionType.failQuiz, fact, quizKey, parent: props.parent, response: input};
+            dispatch(action);
+          }
+        }
+      },
+                        'Submit');
+      return ce('p', null, 'What is a reading for these kanji? ', fact.kanjiKana.filter(hasKanji).join('・'), form,
+                submit);
+    } else {
+      throw new Error('unknown sentence quiz type');
+    }
   } else if (fact.factType === FactType.Conjugated) {
     const {parent} = props;
     if (!parent) { throw new Error('parent not given'); }
@@ -735,7 +816,7 @@ function FactQuiz(props: {fact: Keyed<Fact>, quizKey: string, parent?: Keyed<Sen
           dispatch(action);
         } else {
           const action: QuizAction_FailQuiz =
-              {type: QuizActionType.failQuiz, fact, quizKey, parent: props.parent, response: actual};
+              {type: QuizActionType.failQuiz, fact, quizKey, parent: props.parent, response: input};
           dispatch(action);
         }
       }
@@ -761,7 +842,7 @@ function FactQuiz(props: {fact: Keyed<Fact>, quizKey: string, parent?: Keyed<Sen
           dispatch(action);
         } else {
           const action: QuizAction_FailQuiz =
-              {type: QuizActionType.failQuiz, fact, quizKey, parent: props.parent, response: actual};
+              {type: QuizActionType.failQuiz, fact, quizKey, parent: props.parent, response: input};
           dispatch(action);
         }
       }

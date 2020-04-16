@@ -133,7 +133,42 @@ function FuriganaComponent(props) {
     return ce(react_1.Fragment, null, ...props.furiganas.map(o => typeof o === 'string' ? o : ce('ruby', null, o.ruby, ce('rt', null, o.rt))));
 }
 function VocabComponent(props) {
-    return ce(react_1.Fragment, null, props.fact.kanjiKana.join('・'), '：', props.fact.definition);
+    const [learned, setLearned] = react_1.useState(undefined);
+    const dbKeys = props.fact.keys;
+    react_1.useEffect(() => {
+        if (!learned) {
+            async function init(dbKeys) {
+                const learned = {};
+                for (const key of dbKeys) {
+                    try {
+                        await db.get(key);
+                        learned[key] = true;
+                    }
+                    catch (_a) {
+                        learned[key] = false;
+                    }
+                }
+                setLearned(learned);
+            }
+            init(dbKeys);
+        }
+        const changes = db.changes({ since: 'now', live: true, doc_ids: dbKeys }).on('change', change => {
+            if (!learned) {
+                return;
+            } // if setLearned hasn't yet updated the state, just bail
+            setLearned(Object.assign(Object.assign({}, learned), { [change.id]: !change.deleted }));
+        });
+        return () => changes.cancel(); // to cancel the listener when component unmounts.
+    });
+    if (typeof learned === 'undefined') {
+        return ce(react_1.Fragment, null, '');
+    }
+    const buttons = dbKeys.map(key => {
+        const thisLearned = learned[key] ? 'unlearn' : 'learn!';
+        const display = key.endsWith('meaning') ? 'Meaning' : 'Reading';
+        return ce('button', { onClick: e => learnUnlearn(key, !(learned[key])) }, `${display} ${thisLearned}`);
+    });
+    return ce(react_1.Fragment, null, props.fact.kanjiKana.join('・'), '：', props.fact.definition, ...buttons);
 }
 function ParticleComponent(props) {
     const dbKey = props.fact.keys[0];
@@ -345,7 +380,12 @@ function addKeys(sentence) {
             return Object.assign(Object.assign({}, o), { keys: [`model/${text}/particle/${particleKey}`] });
         }
         else if (o.factType === FactType.Vocab) {
-            return Object.assign(Object.assign({}, o), { keys: [] });
+            const k = o.kanjiKana.join(',');
+            const keys = [`model/${k}/meaning`];
+            if (curtiz_utils_1.hasKanji(k)) {
+                keys.push(`model/${k}/reading`);
+            }
+            return Object.assign(Object.assign({}, o), { keys });
         }
         assertNever(o);
     });
@@ -517,9 +557,7 @@ function Quiz(props) {
         const button = ce('button', { onClick: e => dispatch({ type: QuizActionType.startQuizSession }) }, 'Review!');
         return ce('div', null, 'Oops you got that wrong! <insert feedback>. Onward!', button);
     }
-    else {
-        assertNever(stateMachine);
-    }
+    assertNever(stateMachine);
 }
 async function reviewSentence(quizKey, result, response, date) {
     // if `key = 'model/AAA/reading'`, `superkey = 'model/AAA'`.
@@ -611,7 +649,7 @@ function FactQuiz(props) {
                         dispatch(action);
                     }
                     else {
-                        const action = { type: QuizActionType.failQuiz, fact, quizKey, parent: props.parent, response: actual };
+                        const action = { type: QuizActionType.failQuiz, fact, quizKey, parent: props.parent, response: input };
                         dispatch(action);
                     }
                 }
@@ -623,7 +661,48 @@ function FactQuiz(props) {
         }
     }
     else if (fact.factType === FactType.Vocab) {
-        return ce('p', null, 'unimplemented');
+        if (quizKey.endsWith('meaning')) {
+            const buttons = [
+                ce('button', {
+                    onClick: async (e) => {
+                        await reviewSentence(quizKey, true);
+                        const action = { type: QuizActionType.startQuizSession };
+                        dispatch(action);
+                    }
+                }, 'Yes!'),
+                ce('button', {
+                    onClick: async (e) => {
+                        await reviewSentence(quizKey, false);
+                        const action = { type: QuizActionType.failQuiz, fact, quizKey, parent: props.parent, response: '' };
+                        dispatch(action);
+                    }
+                }, 'No')
+            ];
+            return ce('p', null, 'Do you know what this vocabulary means? ', fact.kanjiKana.join('・'), ...buttons);
+        }
+        else if (quizKey.endsWith('reading')) {
+            const form = ce('input', { type: 'text', value: input, onChange: e => setInput(e.target.value) });
+            const submit = ce('button', {
+                onClick: async (e) => {
+                    const expected = fact.kanjiKana.filter(s => !curtiz_utils_1.hasKanji(s)).map(curtiz_utils_1.kata2hira);
+                    const actual = curtiz_utils_1.kata2hira(input).trim();
+                    const result = expected.indexOf(actual) >= 0;
+                    await reviewSentence(quizKey, result, actual);
+                    if (result) {
+                        const action = { type: QuizActionType.startQuizSession };
+                        dispatch(action);
+                    }
+                    else {
+                        const action = { type: QuizActionType.failQuiz, fact, quizKey, parent: props.parent, response: input };
+                        dispatch(action);
+                    }
+                }
+            }, 'Submit');
+            return ce('p', null, 'What is a reading for these kanji? ', fact.kanjiKana.filter(curtiz_utils_1.hasKanji).join('・'), form, submit);
+        }
+        else {
+            throw new Error('unknown sentence quiz type');
+        }
     }
     else if (fact.factType === FactType.Conjugated) {
         const { parent } = props;
@@ -644,7 +723,7 @@ function FactQuiz(props) {
                     dispatch(action);
                 }
                 else {
-                    const action = { type: QuizActionType.failQuiz, fact, quizKey, parent: props.parent, response: actual };
+                    const action = { type: QuizActionType.failQuiz, fact, quizKey, parent: props.parent, response: input };
                     dispatch(action);
                 }
             }
@@ -670,7 +749,7 @@ function FactQuiz(props) {
                     dispatch(action);
                 }
                 else {
-                    const action = { type: QuizActionType.failQuiz, fact, quizKey, parent: props.parent, response: actual };
+                    const action = { type: QuizActionType.failQuiz, fact, quizKey, parent: props.parent, response: input };
                     dispatch(action);
                 }
             }
