@@ -293,7 +293,7 @@ function Sentence(props) {
         const display = key.endsWith('meaning') ? 'Meaning' : 'Reading';
         return ce('button', { onClick: e => learnUnlearn(key, !(learned[key])) }, `${display} ${thisLearned}`);
     });
-    return ce(react_1.Fragment, null, ce('summary', null, ce(FuriganaComponent, { furiganas: props.fact.furigana })), ...buttons, ce('ul', null, ...props.fact.subfacts.map(fact => ce('li', null, fact.factType === FactType.Vocab ? ce(VocabComponent, { fact })
+    return ce(react_1.Fragment, null, ce('summary', { id: props.fact.keys[0] }, ce(FuriganaComponent, { furiganas: props.fact.furigana })), ...buttons, ce('ul', null, ...props.fact.subfacts.map(fact => ce('li', null, fact.factType === FactType.Vocab ? ce(VocabComponent, { fact })
         : fact.factType === FactType.Particle
             ? ce(ParticleComponent, { fact })
             : ce(ConjugatedComponent, { fact })))));
@@ -457,7 +457,7 @@ function quizReducer(state, action) {
     }
     else if (state.state === QuizStateType.picking) {
         if (action.type === QuizActionType.startQuiz) {
-            const newState = { state: QuizStateType.quizzing, action };
+            const newState = { state: QuizStateType.quizzing, action, previousQuiz: state.previousQuiz };
             return newState;
         }
     }
@@ -467,7 +467,7 @@ function quizReducer(state, action) {
             return newState;
         }
         else if (action.type === QuizActionType.startQuizSession) {
-            const newState = { state: QuizStateType.picking };
+            const newState = { state: QuizStateType.picking, previousQuiz: action.previousQuiz };
             return newState;
         }
         else if (action.type === QuizActionType.doneQuizSession) {
@@ -551,7 +551,8 @@ function Quiz(props) {
         }
         const props = { quizKey, fact, parent };
         const model = memory.ebisu.join(',');
-        return ce('div', null, ce('h2', null, `gonna quiz ${quizKey}, model=${model}, last seen=${memories[quizKey].lastSeen}`), ce(QuizDispatch.Provider, { value: dispatch }, ce(FactQuiz, props)));
+        return ce('div', null, ce('h2', null, `gonna quiz ${quizKey}, model=${model}, last seen=${memories[quizKey].lastSeen}`), ce(QuizDispatch.Provider, { value: dispatch }, ce(FactQuiz, props)), stateMachine.previousQuiz ? ce('p', null, ce('a', { href: `#${stateMachine.previousQuiz.linkId}` }, `Previous quiz: ${stateMachine.previousQuiz.linkText}`))
+            : '');
     }
     else if (stateMachine.state === QuizStateType.feedbacking) {
         const button = ce('button', { onClick: e => dispatch({ type: QuizActionType.startQuizSession }) }, 'Review!');
@@ -617,12 +618,16 @@ function FactQuiz(props) {
     const [input, setInput] = react_1.useState('');
     const dispatch = react_1.useContext(QuizDispatch);
     if (fact.factType === FactType.Sentence) {
+        const linkText = furiganaToRuby(fact.furigana);
         if (quizKey.endsWith('meaning')) {
             const buttons = [
                 ce('button', {
                     onClick: async (e) => {
                         await reviewSentence(quizKey, true);
-                        const action = { type: QuizActionType.startQuizSession };
+                        const action = {
+                            type: QuizActionType.startQuizSession,
+                            previousQuiz: { linkId: fact.keys[0], linkText, result: true }
+                        };
                         dispatch(action);
                     }
                 }, 'Yes!'),
@@ -645,7 +650,10 @@ function FactQuiz(props) {
                     const result = expected === actual.replace(/\s/g, '');
                     await reviewSentence(quizKey, result, actual);
                     if (result) {
-                        const action = { type: QuizActionType.startQuizSession };
+                        const action = {
+                            type: QuizActionType.startQuizSession,
+                            previousQuiz: { linkId: fact.keys[0], linkText, result: true }
+                        };
                         dispatch(action);
                     }
                     else {
@@ -661,12 +669,16 @@ function FactQuiz(props) {
         }
     }
     else if (fact.factType === FactType.Vocab) {
+        const joined = fact.kanjiKana.join('・');
         if (quizKey.endsWith('meaning')) {
             const buttons = [
                 ce('button', {
                     onClick: async (e) => {
                         await reviewSentence(quizKey, true);
-                        const action = { type: QuizActionType.startQuizSession };
+                        const action = {
+                            type: QuizActionType.startQuizSession,
+                            previousQuiz: { linkId: fact.keys[0], linkText: joined, result: true }
+                        };
                         dispatch(action);
                     }
                 }, 'Yes!'),
@@ -678,7 +690,7 @@ function FactQuiz(props) {
                     }
                 }, 'No')
             ];
-            return ce('p', null, 'Do you know what this vocabulary means? ', fact.kanjiKana.join('・'), ...buttons);
+            return ce('p', null, 'Do you know what this vocabulary means? ', joined, ...buttons);
         }
         else if (quizKey.endsWith('reading')) {
             const form = ce('input', { type: 'text', value: input, onChange: e => setInput(e.target.value) });
@@ -689,7 +701,10 @@ function FactQuiz(props) {
                     const result = expected.indexOf(actual) >= 0;
                     await reviewSentence(quizKey, result, actual);
                     if (result) {
-                        const action = { type: QuizActionType.startQuizSession };
+                        const action = {
+                            type: QuizActionType.startQuizSession,
+                            previousQuiz: { linkId: fact.keys[0], linkText: joined, result: true }
+                        };
                         dispatch(action);
                     }
                     else {
@@ -719,7 +734,10 @@ function FactQuiz(props) {
                 const result = expected === actual.replace(/\s/g, '');
                 await reviewSentence(quizKey, result, actual);
                 if (result) {
-                    const action = { type: QuizActionType.startQuizSession };
+                    const action = {
+                        type: QuizActionType.startQuizSession,
+                        previousQuiz: { linkId: parent.keys[0], linkText: expected, result: true }
+                    };
                     dispatch(action);
                 }
                 else {
@@ -745,7 +763,10 @@ function FactQuiz(props) {
                 const result = cloze === actual.replace(/\s/g, '');
                 await reviewSentence(quizKey, result, actual);
                 if (result) {
-                    const action = { type: QuizActionType.startQuizSession };
+                    const action = {
+                        type: QuizActionType.startQuizSession,
+                        previousQuiz: { linkId: parent.keys[0], linkText: cloze, result: true }
+                    };
                     dispatch(action);
                 }
                 else {

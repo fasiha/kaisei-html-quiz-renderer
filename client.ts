@@ -302,7 +302,7 @@ function Sentence(props: {fact: Keyed<SentenceFact>}) {
   return ce(
       Fragment,
       null,
-      ce('summary', null, ce(FuriganaComponent, {furiganas: props.fact.furigana})),
+      ce('summary', {id: props.fact.keys[0]}, ce(FuriganaComponent, {furiganas: props.fact.furigana})),
       ...buttons,
       ce(
           'ul',
@@ -487,11 +487,13 @@ type QuizState_Init = {
   state: QuizStateType.init
 };
 type QuizState_Picking = {
-  state: QuizStateType.picking
+  state: QuizStateType.picking,
+  previousQuiz?: PreviousQuiz,  // purely to pass it on to the "Quizzing" next state (to link previous quiz)
 };
 type QuizState_Quizzing = {
   state: QuizStateType.quizzing,
-  action: QuizAction_StartQuiz
+  action: QuizAction_StartQuiz,
+  previousQuiz?: PreviousQuiz,
 };
 type QuizState_Feedbacking = {
   state: QuizStateType.feedbacking,
@@ -505,8 +507,14 @@ enum QuizActionType {
   failQuiz = 'failQuiz',
   doneQuizSession = 'doneQuizSession',
 }
+interface PreviousQuiz {
+  linkId: string;
+  linkText: string;
+  result: boolean;
+}
 interface QuizAction_StartQuizSession {
   type: QuizActionType.startQuizSession;
+  previousQuiz?: PreviousQuiz;
 }
 interface QuizAction_StartQuiz {
   type: QuizActionType.startQuiz;
@@ -537,7 +545,7 @@ function quizReducer(state: QuizState, action: QuizAction): QuizState {
     }
   } else if (state.state === QuizStateType.picking) {
     if (action.type === QuizActionType.startQuiz) {
-      const newState: QuizState_Quizzing = {state: QuizStateType.quizzing, action};
+      const newState: QuizState_Quizzing = {state: QuizStateType.quizzing, action, previousQuiz: state.previousQuiz};
       return newState;
     }
   } else if (state.state === QuizStateType.quizzing) {
@@ -545,7 +553,7 @@ function quizReducer(state: QuizState, action: QuizAction): QuizState {
       const newState: QuizState_Feedbacking = {state: QuizStateType.feedbacking, action};
       return newState;
     } else if (action.type === QuizActionType.startQuizSession) {
-      const newState: QuizState_Picking = {state: QuizStateType.picking};
+      const newState: QuizState_Picking = {state: QuizStateType.picking, previousQuiz: action.previousQuiz};
       return newState;
     } else if (action.type === QuizActionType.doneQuizSession) {
       const newState: QuizState_Init = {state: QuizStateType.init};
@@ -622,7 +630,11 @@ function Quiz(props: PageState) {
     const model = memory.ebisu.join(',');
     return ce('div', null,
               ce('h2', null, `gonna quiz ${quizKey}, model=${model}, last seen=${memories[quizKey].lastSeen}`),
-              ce(QuizDispatch.Provider, {value: dispatch as any}, ce(FactQuiz, props)));
+              ce(QuizDispatch.Provider, {value: dispatch as any}, ce(FactQuiz, props)),
+              stateMachine.previousQuiz ? ce('p', null,
+                                             ce('a', {href: `#${stateMachine.previousQuiz.linkId}`},
+                                                `Previous quiz: ${stateMachine.previousQuiz.linkText}`))
+                                        : '');
   } else if (stateMachine.state === QuizStateType.feedbacking) {
     const button = ce('button', {onClick: e => dispatch({type: QuizActionType.startQuizSession})}, 'Review!');
     return ce('div', null, 'Oops you got that wrong! <insert feedback>. Onward!', button);
@@ -705,12 +717,16 @@ function FactQuiz(props: {fact: Keyed<Fact>, quizKey: string, parent?: Keyed<Sen
   const dispatch = useContext(QuizDispatch);
 
   if (fact.factType === FactType.Sentence) {
+    const linkText = furiganaToRuby(fact.furigana);
     if (quizKey.endsWith('meaning')) {
       const buttons = [
         ce('button', {
           onClick: async e => {
             await reviewSentence(quizKey, true)
-            const action: QuizAction_StartQuizSession = {type: QuizActionType.startQuizSession};
+            const action: QuizAction_StartQuizSession = {
+              type: QuizActionType.startQuizSession,
+              previousQuiz: {linkId: fact.keys[0], linkText, result: true}
+            };
             dispatch(action);
           }
         },
@@ -737,7 +753,10 @@ function FactQuiz(props: {fact: Keyed<Fact>, quizKey: string, parent?: Keyed<Sen
           await reviewSentence(quizKey, result, actual);
 
           if (result) {
-            const action: QuizAction_StartQuizSession = {type: QuizActionType.startQuizSession};
+            const action: QuizAction_StartQuizSession = {
+              type: QuizActionType.startQuizSession,
+              previousQuiz: {linkId: fact.keys[0], linkText, result: true}
+            };
             dispatch(action);
           } else {
             const action: QuizAction_FailQuiz =
@@ -752,12 +771,16 @@ function FactQuiz(props: {fact: Keyed<Fact>, quizKey: string, parent?: Keyed<Sen
       throw new Error('unknown sentence quiz type');
     }
   } else if (fact.factType === FactType.Vocab) {
+    const joined = fact.kanjiKana.join('・');
     if (quizKey.endsWith('meaning')) {
       const buttons = [
         ce('button', {
           onClick: async e => {
             await reviewSentence(quizKey, true)
-            const action: QuizAction_StartQuizSession = {type: QuizActionType.startQuizSession};
+            const action: QuizAction_StartQuizSession = {
+              type: QuizActionType.startQuizSession,
+              previousQuiz: {linkId: fact.keys[0], linkText: joined, result: true}
+            };
             dispatch(action);
           }
         },
@@ -772,7 +795,7 @@ function FactQuiz(props: {fact: Keyed<Fact>, quizKey: string, parent?: Keyed<Sen
         },
            'No')
       ];
-      return ce('p', null, 'Do you know what this vocabulary means? ', fact.kanjiKana.join('・'), ...buttons);
+      return ce('p', null, 'Do you know what this vocabulary means? ', joined, ...buttons);
     } else if (quizKey.endsWith('reading')) {
       const form = ce('input', {type: 'text', value: input, onChange: e => setInput(e.target.value)});
       const submit = ce('button', {
@@ -783,7 +806,10 @@ function FactQuiz(props: {fact: Keyed<Fact>, quizKey: string, parent?: Keyed<Sen
           await reviewSentence(quizKey, result, actual);
 
           if (result) {
-            const action: QuizAction_StartQuizSession = {type: QuizActionType.startQuizSession};
+            const action: QuizAction_StartQuizSession = {
+              type: QuizActionType.startQuizSession,
+              previousQuiz: {linkId: fact.keys[0], linkText: joined, result: true}
+            };
             dispatch(action);
           } else {
             const action: QuizAction_FailQuiz =
@@ -812,7 +838,10 @@ function FactQuiz(props: {fact: Keyed<Fact>, quizKey: string, parent?: Keyed<Sen
         await reviewSentence(quizKey, result, actual);
 
         if (result) {
-          const action: QuizAction_StartQuizSession = {type: QuizActionType.startQuizSession};
+          const action: QuizAction_StartQuizSession = {
+            type: QuizActionType.startQuizSession,
+            previousQuiz: {linkId: parent.keys[0], linkText: expected, result: true}
+          };
           dispatch(action);
         } else {
           const action: QuizAction_FailQuiz =
@@ -839,7 +868,10 @@ function FactQuiz(props: {fact: Keyed<Fact>, quizKey: string, parent?: Keyed<Sen
         await reviewSentence(quizKey, result, actual);
 
         if (result) {
-          const action: QuizAction_StartQuizSession = {type: QuizActionType.startQuizSession};
+          const action: QuizAction_StartQuizSession = {
+            type: QuizActionType.startQuizSession,
+            previousQuiz: {linkId: parent.keys[0], linkText: cloze, result: true}
+          };
           dispatch(action);
         } else {
           const action: QuizAction_FailQuiz =
